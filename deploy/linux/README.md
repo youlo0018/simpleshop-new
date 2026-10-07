@@ -71,8 +71,8 @@ chmod +x ./*.sh        # 首次 clone 后给脚本加执行位（git 不跨平�
 
 ```bash
 # ① 拿源码
-git clone https://github.com/youlo0018-cmyk/SimpleShop.git
-cd SimpleShop
+git clone https://github.com/youlo0018/simpleshop-new.git
+cd simpleshop-new
 
 # ② 压缩包解压到仓库根目录（覆盖；根目录有 RESTORE.md 可以先看）
 tar -xzf simpleshop-runtime-data-*.tar.gz -C .

@@ -20,9 +20,9 @@
 ## 怎么用（Linux Mint）
 
 ```bash
-# 1. 先拿源码（私有仓库，需要先登录 GitHub）
-git clone https://github.com/youlo0018-cmyk/SimpleShop.git
-cd SimpleShop
+# 1. 先拿源码（公开仓库，直接 clone）
+git clone https://github.com/youlo0018/simpleshop-new.git
+cd simpleshop-new
 
 # 2. 把本压缩包解压到**仓库根目录**（覆盖）
 tar -xzf simpleshop-runtime-data-*.tar.gz -C .
