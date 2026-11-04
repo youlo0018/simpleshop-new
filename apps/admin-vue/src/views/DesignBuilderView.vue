@@ -3,7 +3,6 @@
     <div class="head">
       <div>
         <h2 class="head__title">{{ title }}</h2>
-        <p class="head__desc">从左侧拖组件到手机预览里，可拖动排序</p>
       </div>
       <div class="head__ops">
         <el-select
@@ -648,12 +647,6 @@ onMounted(load);
   line-height: var(--lh-display);
   font-weight: 600;
   letter-spacing: -0.5px;
-}
-
-.head__desc {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sub);
-  color: var(--text-2);
 }
 
 .head__ops {

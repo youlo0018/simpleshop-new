@@ -3,7 +3,6 @@
     <div class="head">
       <div>
         <h2 class="head__title">{{ config.title }}</h2>
-        <p class="head__desc">{{ config.desc }}</p>
       </div>
       <div class="head__tools">
         <el-select
@@ -592,12 +591,6 @@ onMounted(async () => {
   line-height: var(--lh-display);
   font-weight: 600;
   letter-spacing: -0.5px;
-}
-
-.head__desc {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sub);
-  color: var(--text-2);
 }
 
 .head__search {

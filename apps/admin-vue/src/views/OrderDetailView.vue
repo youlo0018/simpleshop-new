@@ -4,12 +4,6 @@
       <div>
         <el-button text class="back" @click="$router.push('/orders')">← 返回订单列表</el-button>
         <h2 class="head__title">{{ order.orderNo || '订单详情' }}</h2>
-        <p class="head__desc">
-          <span v-if="order.statusName" class="pill" :class="'pill--' + statusColor('order', order.status)">
-            {{ order.statusName }}
-          </span>
-          <span v-if="order.createdAt" class="head__time">下单于 {{ order.createdAt }}</span>
-        </p>
       </div>
       <div class="head__actions">
         <!-- 动作只在状态允许时出现：按钮常驻再报错，等于让运营每次都先踩一次坑 -->
@@ -444,7 +438,6 @@ async function act(path: string, body: any, okText: string) {
   }
 }
 
-
 async function cancelOrder() {
   try {
     await ElMessageBox.confirm(
@@ -465,7 +458,6 @@ function simulate(succeed: boolean) {
     succeed ? '已模拟支付成功' : '已模拟支付失败',
   );
 }
-
 
 async function verifyPickup() {
   try {
@@ -543,13 +535,6 @@ onMounted(load);
   line-height: var(--lh-title-1);
   font-weight: 600;
   letter-spacing: -0.5px;
-}
-
-.head__desc {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin: var(--space-2) 0 0;
 }
 
 .head__time {

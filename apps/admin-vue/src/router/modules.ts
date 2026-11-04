@@ -367,6 +367,16 @@ export const adminRoutes: RouteRecordRaw[] = [
     children: [listRoute('', 'file-list', '文件管理', 'file:upload', 'files')],
   },
   {
+    path: 'watermark-reader',
+    name: 'watermark-reader',
+    component: () => import('@/views/WatermarkReaderView.vue'),
+    meta: {
+      title: '水印解析',
+      icon: 'View',
+      superAdminOnly: true,
+    },
+  },
+  {
     path: 'notices',
     meta: { title: '公告', icon: 'Bell', perm: 'notice:read' },
     children: [

@@ -3,7 +3,6 @@
     <div class="head">
       <div>
         <h2 class="head__title">订单</h2>
-        <p class="head__desc">共 {{ total }} 单</p>
       </div>
       <el-input
         v-model="query.keyword"
@@ -349,7 +348,6 @@ async function openRefund(row: any) {
   refund.detail = detail;
 }
 
-
 async function verifyPickup(row: any) {
   try {
     const result = await ElMessageBox.prompt('扫描或输入顾客取货码', '核销取货码', {
@@ -416,12 +414,6 @@ onMounted(async () => {
   line-height: var(--lh-display);
   font-weight: 600;
   letter-spacing: -0.5px;
-}
-
-.head__desc {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sub);
-  color: var(--text-2);
 }
 
 .head__search {

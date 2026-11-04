@@ -77,15 +77,18 @@
         <RouterView :key="route.path" />
       </main>
     </div>
+
+    <AdminWatermark />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useRoute, useRouter, RouterLink, RouterView } from 'vue-router';
+import AdminWatermark from '@/components/AdminWatermark.vue';
 import { adminRoutes } from '@/router/modules';
 import { logout } from '@/api/auth';
-import { getSession, hasPermission } from '@/utils/session';
+import { getSession, hasPermission, isSuperAdmin } from '@/utils/session';
 
 // 布局常量与 styles.css 的 --sidebar-w / --sidebar-w-collapsed 保持一致。
 // 这里不用 CSS 变量取值是因为绑定到 style 时需要具体字符串。
@@ -119,11 +122,16 @@ function leaves(group: any) {
       c.meta?.title &&
       !String(c.path).includes(':') &&
       !c.meta?.hiddenInMenu &&
-      hasPermission(c.meta?.perm))
+      canAccess(c.meta))
     .map((c: any) => {
       const full = (base + '/' + c.path).replace(/\/+/g, '/').replace(/\/$/, '');
       return { ...c, path: full, fullPath: full };
     });
+}
+
+function canAccess(meta: any) {
+  if (meta?.superAdminOnly && !isSuperAdmin()) return false;
+  return hasPermission(meta?.perm);
 }
 
 // 无二级的模块（工作台）直接用自身路径
@@ -157,7 +165,7 @@ const menus = computed(() =>
   adminRoutes.filter((r: any) => {
     if (r.meta?.hidden) return false;
     if (r.children?.length) return leaves(r).length > 0;
-    return hasPermission(r.meta?.perm);
+    return canAccess(r.meta);
   }),
 );
 
@@ -173,7 +181,7 @@ const SECTION_ORDER = [
   { title: '交易', paths: ['orders', 'payments', 'refunds'] },
   { title: '营销与权益', paths: ['promotions', 'coupons', 'seckill', 'points', 'evaluates'] },
   { title: '内容与数据', paths: ['design', 'reports', 'logs'] },
-  { title: '系统', paths: ['files'] },
+  { title: '系统', paths: ['files', 'watermark-reader'] },
 ];
 
 const sections = computed(() =>

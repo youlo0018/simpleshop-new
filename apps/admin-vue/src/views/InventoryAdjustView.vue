@@ -3,7 +3,6 @@
     <div class="page-header">
       <div>
         <h2 class="page-header__title">调整库存</h2>
-        <p class="page-header__desc">{{ product.spuName || '商品库存按 SKU 维护' }}</p>
       </div>
       <el-button @click="router.push('/products')">返回商品列表</el-button>
     </div>

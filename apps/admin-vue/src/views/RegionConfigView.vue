@@ -3,7 +3,6 @@
     <div class="page-header">
       <div>
         <h2 class="page-header__title">地区地址配置</h2>
-        <p class="page-header__desc">按省、市、区三级维护，小程序只展示启用的地址数据</p>
       </div>
       <div class="tools">
         <el-select v-model="platformId" placeholder="选择平台" class="platform" @change="load">

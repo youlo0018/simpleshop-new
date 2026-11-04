@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
 import { isLoggedIn } from '@/api/auth';
+import { isSuperAdmin } from '@/utils/session';
 
 // 菜单结构同时驱动侧边栏与路由，单一来源（DESIGN_SPEC「不凑合」原则：
 // 菜单与路由各写一份，加页面时必然漏一处）。
@@ -82,7 +83,10 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   if (to.meta?.public) return true;
-  if (isLoggedIn()) return true;
+  if (isLoggedIn()) {
+    if (to.meta?.superAdminOnly && !isSuperAdmin()) return { path: '/dashboard' };
+    return true;
+  }
   // 未登录一律回登录页，并带上原路径，登录后跳回
   return { path: '/login', query: { redirect: to.fullPath } };
 });

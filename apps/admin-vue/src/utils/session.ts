@@ -7,6 +7,7 @@
 const TOKEN_KEY = 'simpleshop_admin_token';
 
 export interface AdminSession {
+  sessionId: string;
   userId: string;
   userName: string;
   nickName: string;
@@ -44,6 +45,7 @@ export function getSession(): AdminSession | null {
       : [];
 
   return {
+    sessionId: String(payload.jti || ''),
     userId: String(payload.sub || ''),
     userName: String(payload.preferred_username || payload.user_name || ''),
     nickName: String(payload.nick_name || ''),

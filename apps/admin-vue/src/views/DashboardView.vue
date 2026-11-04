@@ -3,7 +3,6 @@
     <div class="head">
       <div>
         <h2 class="head__title">经营概览</h2>
-        <p class="head__desc">{{ rangeName }} · 按支付时间统计</p>
       </div>
       <el-segmented v-model="range" :options="rangeOptions" />
     </div>
@@ -128,12 +127,6 @@ onMounted(load);
   /* 字阶里最大的一档配 600 字重就够，再重会变成海报而不是后台 */
   font-weight: 600;
   letter-spacing: -0.5px;
-}
-
-.head__desc {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sub);
-  color: var(--text-2);
 }
 
 /* ---------- 主视觉：成交额 ---------- */

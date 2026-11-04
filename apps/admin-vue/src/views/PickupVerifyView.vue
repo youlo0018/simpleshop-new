@@ -2,7 +2,6 @@
   <div>
     <div class="head">
       <h2 class="head__title">取货码核销</h2>
-      <p class="head__desc">扫客户出示的取货码完成自提取货</p>
     </div>
 
     <section class="panel">
@@ -92,12 +91,6 @@ function clear() {
   line-height: var(--lh-display);
   font-weight: 600;
   letter-spacing: -0.5px;
-}
-
-.head__desc {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sub);
-  color: var(--text-2);
 }
 
 .panel {

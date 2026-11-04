@@ -3,7 +3,6 @@
     <div class="page-header">
       <div>
         <h2 class="page-header__title">{{ config.title }}</h2>
-        <p class="page-header__desc">{{ config.desc }}</p>
       </div>
       <div class="tools">
         <el-input

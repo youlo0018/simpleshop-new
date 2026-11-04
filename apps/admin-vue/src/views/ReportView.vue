@@ -3,7 +3,6 @@
     <div class="head">
       <div>
         <h2 class="head__title">{{ config.title }}</h2>
-        <p class="head__desc">{{ config.desc }}</p>
       </div>
       <div class="head__tools">
         <!-- 只给需要时间档位的报表显示；秒杀报表按场次筛，不按时间 -->
@@ -141,12 +140,6 @@ onMounted(load);
   line-height: var(--lh-display);
   font-weight: 600;
   letter-spacing: -0.5px;
-}
-
-.head__desc {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sub);
-  color: var(--text-2);
 }
 
 .strong {

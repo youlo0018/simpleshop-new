@@ -3,7 +3,6 @@
     <div class="head">
       <div>
         <h2 class="head__title">商品搜索同义词</h2>
-        <p class="head__desc">规则在查询时展开，保存后立即生效，不重建商品索引</p>
       </div>
       <div class="head__actions">
         <el-button @click="openPreview">查询预览</el-button>
@@ -515,12 +514,6 @@ onMounted(async () => {
   font-size: var(--text-display);
   line-height: var(--lh-display);
   font-weight: 600;
-}
-
-.head__desc {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sub);
-  color: var(--text-2);
 }
 
 .head__actions {

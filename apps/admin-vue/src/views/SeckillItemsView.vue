@@ -3,7 +3,6 @@
     <div class="head">
       <div>
         <h2 class="head__title">场次商品</h2>
-        <p class="head__desc">添加秒杀商品。场次发布后不能再改</p>
       </div>
       <el-button @click="back">返回场次列表</el-button>
     </div>
@@ -178,12 +177,6 @@ onMounted(load);
   line-height: var(--lh-display);
   font-weight: 600;
   letter-spacing: -0.5px;
-}
-
-.head__desc {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sub);
-  color: var(--text-2);
 }
 
 .panel {

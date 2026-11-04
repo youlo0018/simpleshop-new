@@ -3,7 +3,6 @@
     <div class="head">
       <div>
         <h2 class="head__title">索引对账</h2>
-        <p class="head__desc">比对商品库与搜索索引，找出不一致的条目</p>
       </div>
       <el-button type="primary" :loading="loading" @click="load">重新对账</el-button>
     </div>
@@ -143,12 +142,6 @@ onMounted(load);
   line-height: var(--lh-display);
   font-weight: 600;
   letter-spacing: -0.5px;
-}
-
-.head__desc {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sub);
-  color: var(--text-2);
 }
 
 .panel {

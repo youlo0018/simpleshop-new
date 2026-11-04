@@ -3,9 +3,6 @@
     <div class="page-header">
       <div>
         <h2 class="page-header__title">分配权限</h2>
-        <p class="page-header__desc">
-          {{ role.roleName ? `${role.roleName}（${role.code}）` : '正在读取角色…' }}
-        </p>
       </div>
       <div class="tools">
         <el-button :disabled="loading || role.isBuiltin" @click="selectAll">全部权限</el-button>
