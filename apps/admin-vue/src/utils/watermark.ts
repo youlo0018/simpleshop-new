@@ -63,7 +63,7 @@ export function drawFingerprintTile(source: WatermarkSource): string {
 
 export function decodeFingerprint(image: ImageData): DecodedWatermark | null {
   let best: DecodedWatermark | null = null;
-  const scales = [1, 2, 0.8, 0.9, 1.1, 1.25, 1.5, 0.75];
+  const scales = [1, 2, 0.8, 0.9, 1.1, 1.2, 1.25, 1.5, 0.75];
 
   for (const scale of scales) {
     const tile = WATERMARK_TILE_SIZE * scale;
@@ -78,19 +78,14 @@ export function decodeFingerprint(image: ImageData): DecodedWatermark | null {
 
         const decoded = decodeFeatures(features);
         if (!decoded) continue;
-        const candidate: DecodedWatermark = {
-          ...decoded.payload,
-          confidence: decoded.confidence,
-          scale,
-          offsetX,
-          offsetY,
-        };
+        const candidate = toDecodedWatermark(decoded, scale, offsetX, offsetY);
         if (!best || candidate.confidence > best.confidence) best = candidate;
       }
     }
   }
 
-  return best && best.confidence >= 0.18 ? best : null;
+  if (best && best.confidence >= 0.18) return best;
+  return decodeWithPhaseSearch(image);
 }
 
 export function encodeWatermarkPayload(source: WatermarkSource): Uint8Array {
@@ -128,6 +123,70 @@ export function decodeWatermarkPayload(bits: Uint8Array): WatermarkPayload | nul
   };
 }
 
+function decodeWithPhaseSearch(image: ImageData) {
+  let best: DecodedWatermark | null = null;
+  const scales = [
+    1.2, 1, 1.25, 1.5, 2, 0.8, 0.9, 1.1, 0.75, 0.67, 0.6, 0.7,
+    0.85, 1.33, 1.4, 1.6, 1.67, 1.75, 2.25, 2.5, 0.5,
+  ];
+  const expectedMagic = Array.from({ length: 8 }, (_, index) => {
+    const bit = Number((BigInt(MAGIC) >> BigInt(7 - index)) & 1n);
+    return bit ^ maskBit(index);
+  });
+
+  // 截图工具可能裁剪边缘或重新缩放，水印原点不再固定为 (0, 0)。
+  // 先用 8 位魔术字粗定位相位，再只对高分相位做完整解码。
+  for (const scale of scales) {
+    const tile = WATERMARK_TILE_SIZE * scale;
+    const cell = CELL_SIZE * scale;
+    const step = Math.max(2, cell * 0.75);
+    const phases: Array<{ x: number; y: number; score: number }> = [];
+
+    for (let originX = 0; originX < tile; originX += step) {
+      for (let originY = 0; originY < tile; originY += step) {
+        const score = scoreMagicCells(
+          image,
+          tile,
+          cell,
+          originX,
+          originY,
+          expectedMagic,
+        );
+        if (score !== null) phases.push({ x: originX, y: originY, score });
+      }
+    }
+
+    phases.sort((a, b) => b.score - a.score);
+    for (const phase of phases.slice(0, 6)) {
+      const features = aggregateCells(image, tile, cell, phase.x, phase.y);
+      if (!features) continue;
+      const decoded = decodeFeatures(features);
+      if (!decoded) continue;
+      const candidate = toDecodedWatermark(decoded, scale, phase.x, phase.y);
+      if (!best || candidate.confidence > best.confidence) best = candidate;
+    }
+  }
+
+  return best && best.confidence >= 0.18 ? best : null;
+}
+
+function scoreMagicCells(
+  image: ImageData,
+  tile: number,
+  cell: number,
+  originX: number,
+  originY: number,
+  expectedBits: number[],
+) {
+  let score = 0;
+  for (let index = 0; index < expectedBits.length; index++) {
+    const value = sampleCell(image, tile, cell, originX, originY, 0, index, 1);
+    if (value === null) return null;
+    score += value * (expectedBits[index] ? 1 : -1);
+  }
+  return score;
+}
+
 function decodeFeatures(values: Float64Array) {
   const sorted = Array.from(values).sort((a, b) => a - b);
   let best: { payload: WatermarkPayload; confidence: number } | null = null;
@@ -163,6 +222,70 @@ function decodeFeatures(values: Float64Array) {
     if (!best || candidate.confidence > best.confidence) best = candidate;
   }
   return best;
+}
+
+function toDecodedWatermark(
+  decoded: { payload: WatermarkPayload; confidence: number },
+  scale: number,
+  offsetX: number,
+  offsetY: number,
+): DecodedWatermark {
+  return {
+    ...decoded.payload,
+    confidence: decoded.confidence,
+    scale,
+    offsetX,
+    offsetY,
+  };
+}
+
+function sampleCell(
+  image: ImageData,
+  tile: number,
+  cell: number,
+  originX: number,
+  originY: number,
+  row: number,
+  col: number,
+  sampleRadius = Math.max(1, Math.min(5, Math.floor(cell / 5))),
+) {
+  let total = 0;
+  let count = 0;
+
+  for (
+    let centerY = originY + (row + 0.5) * cell;
+    centerY < image.height - sampleRadius;
+    centerY += tile
+  ) {
+    if (centerY < sampleRadius) continue;
+    for (
+      let centerX = originX + (col + 0.25) * cell;
+      centerX < image.width - sampleRadius;
+      centerX += tile
+    ) {
+      if (centerX < sampleRadius) continue;
+      for (let dy = -sampleRadius; dy <= sampleRadius; dy++) {
+        for (let dx = -sampleRadius; dx <= sampleRadius; dx++) {
+          const x = Math.round(centerX + dx);
+          const y = Math.round(centerY + dy);
+          const rightX = Math.round(centerX + cell / 2 + dx);
+          if (x < 0 || x >= image.width || rightX < 0 || rightX >= image.width) {
+            continue;
+          }
+          const leftPixel = (y * image.width + x) * 4;
+          const rightPixel = (y * image.width + rightX) * 4;
+          total +=
+            image.data[leftPixel]
+            - image.data[leftPixel + 2]
+            - image.data[rightPixel]
+            + image.data[rightPixel + 2];
+          count += 1;
+        }
+      }
+    }
+  }
+
+  return count > 0 ? total / count : null;
 }
 
 function aggregateCells(

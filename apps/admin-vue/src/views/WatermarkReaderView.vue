@@ -348,7 +348,9 @@ async function runOcr() {
 
 async function runFingerprintMatch() {
   if (!sourceData) return false;
-  state.ocrStatus = '正在解析数字水印…';
+  state.ocrStatus = '正在解析数字水印，兼容截图裁剪与缩放…';
+  await nextTick();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   const decoded = decodeFingerprint(sourceData);
   if (!decoded) return false;
 
