@@ -12,50 +12,50 @@
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900001, now(), '顺丰速运',   'sf',   10, 1, '内置'
+SELECT 900001, now() AT TIME ZONE 'UTC', '顺丰速运',   'sf',   10, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '顺丰速运' AND is_deleted = false);
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900002, now(), '中通快递',   'zto',  20, 1, '内置'
+SELECT 900002, now() AT TIME ZONE 'UTC', '中通快递',   'zto',  20, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '中通快递' AND is_deleted = false);
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900003, now(), '圆通速递',   'yto',  30, 1, '内置'
+SELECT 900003, now() AT TIME ZONE 'UTC', '圆通速递',   'yto',  30, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '圆通速递' AND is_deleted = false);
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900004, now(), '韵达快递',   'yd',   40, 1, '内置'
+SELECT 900004, now() AT TIME ZONE 'UTC', '韵达快递',   'yd',   40, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '韵达快递' AND is_deleted = false);
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900005, now(), '申通快递',   'st',   50, 1, '内置'
+SELECT 900005, now() AT TIME ZONE 'UTC', '申通快递',   'st',   50, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '申通快递' AND is_deleted = false);
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900006, now(), '极兔速递',   'jtx',  60, 1, '内置'
+SELECT 900006, now() AT TIME ZONE 'UTC', '极兔速递',   'jtx',  60, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '极兔速递' AND is_deleted = false);
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900007, now(), '京东物流',   'jd',   70, 1, '内置'
+SELECT 900007, now() AT TIME ZONE 'UTC', '京东物流',   'jd',   70, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '京东物流' AND is_deleted = false);
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900008, now(), '邮政EMS',    'ems',  80, 1, '内置'
+SELECT 900008, now() AT TIME ZONE 'UTC', '邮政EMS',    'ems',  80, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '邮政EMS' AND is_deleted = false);
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900009, now(), '德邦快递',   'db',   90, 1, '内置'
+SELECT 900009, now() AT TIME ZONE 'UTC', '德邦快递',   'db',   90, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '德邦快递' AND is_deleted = false);
 
 INSERT INTO logistics_company
     (id, created_at, company_name, company_code, sort_order, status, remark)
-SELECT 900010, now(), '菜鸟裹裹',   'cainiao', 100, 1, '内置'
+SELECT 900010, now() AT TIME ZONE 'UTC', '菜鸟裹裹',   'cainiao', 100, 1, '内置'
 WHERE NOT EXISTS (SELECT 1 FROM logistics_company WHERE company_name = '菜鸟裹裹' AND is_deleted = false);

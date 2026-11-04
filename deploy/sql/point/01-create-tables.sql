@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS point_record (
     deleted_at       timestamp    NULL,
     customer_id      bigint       NOT NULL,
     biz_no           varchar(64)  NOT NULL,
+    -- 退款单号：只对 action=refund 有值。同一订单的多次部分退款靠它区分，
+    -- 见下面的唯一索引。
+    refund_no        varchar(64)  NOT NULL DEFAULT '',
     action           varchar(16)  NOT NULL,
     quantity         bigint       NOT NULL,
     before_available bigint       NOT NULL DEFAULT 0,
@@ -101,10 +104,18 @@ CREATE TABLE IF NOT EXISTS point_record (
     CONSTRAINT pk_point_record PRIMARY KEY (id)
 );
 
--- 🔴 幂等键：BizNo + Action + CustomerId（BUSINESS.md 13.7）。
+-- 退款单号是后来补的列：老库靠这条 ALTER 补齐（幂等，可重复执行）。
+ALTER TABLE point_record ADD COLUMN IF NOT EXISTS refund_no varchar(64) NOT NULL DEFAULT '';
+
+-- 🔴 幂等键：BizNo + Action + CustomerId（BUSINESS.md 13.7）+ 退款单号。
 -- 用数据库唯一索引而不是「先查再插」——并发下后者必然漏，重复发放积分比少发严重得多。
+--
+-- 退款单号在幂等键里：同一订单的第二次部分退款若还撞 (customer, biz_no, action)，
+-- 会被当成重复请求直接丢掉，应回收的积分永远收不回（实测第二个部分退款回收 0 分）。
+-- 非退款动作的 refund_no 恒为空串，幂等语义不变。
+DROP INDEX IF EXISTS uk_point_record_idem;
 CREATE UNIQUE INDEX IF NOT EXISTS uk_point_record_idem
-    ON point_record (customer_id, biz_no, action) WHERE is_deleted = false;
+    ON point_record (customer_id, biz_no, action, refund_no) WHERE is_deleted = false;
 
 CREATE INDEX IF NOT EXISTS idx_point_record_customer ON point_record (customer_id, created_at);
 

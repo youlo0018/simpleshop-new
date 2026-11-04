@@ -18,6 +18,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()
@@ -124,14 +142,27 @@ Invoke-Case 'API-PNT-030' '锁定 40' {
 }
 
 Invoke-Case 'API-PNT-031' '🔴 退款 50% 按**向上取整**回收 20（40×0.5=20）' {
-    $r = Send 'Refund' @{ customerId = $script:alice; bizNo = 'ORD-D'; refundRatio = 0.5 }
+    # refundNo 是幂等键的一部分：同一订单多次部分退款各带各的退款单号，
+    # 否则第二次会被当成重复请求丢掉（曾经的真实缺陷）。
+    $r = Send 'Refund' @{ customerId = $script:alice; bizNo = 'ORD-D'; refundNo = 'RFD-D-1'; refundRatio = 0.5 }
     return $r.success -and $r.data.available -eq 70
+}
+
+Invoke-Case 'API-PNT-031b' '🔴 第二次部分退款按**累计**口径回收（换退款单号，再收 20）' {
+    $r = Send 'Refund' @{ customerId = $script:alice; bizNo = 'ORD-D'; refundNo = 'RFD-D-2'; refundRatio = 0.5 }
+    # 累计比例 1.0 → 应把剩下 20 分也收回，available 70 → 90
+    return $r.success -and $r.data.available -eq 90
+}
+
+Invoke-Case 'API-PNT-031c' '🔴 同一退款单号重试只幂等命中，不再回收' {
+    $r = Send 'Refund' @{ customerId = $script:alice; bizNo = 'ORD-D'; refundNo = 'RFD-D-2'; refundRatio = 0.5 }
+    return $r.success -and $r.data.alreadyApplied -eq $true -and $r.data.available -eq 90
 }
 
 Invoke-Case 'API-PNT-032' '🔴 奇数比例也向上取整：锁 33 退 30% → 10（9.9 上取整）' {
     Send 'Lock' @{ customerId = $script:alice; bizNo = 'ORD-E'; quantity = 33 } | Out-Null
     $before = Get-Balance $script:alice
-    $r = Send 'Refund' @{ customerId = $script:alice; bizNo = 'ORD-E'; refundRatio = 0.3 }
+    $r = Send 'Refund' @{ customerId = $script:alice; bizNo = 'ORD-E'; refundNo = 'RFD-E-1'; refundRatio = 0.3 }
     # 33 × 0.3 = 9.9 → 向上取整 10
     return $r.success -and ($r.data.available - $before.available) -eq 10
 }
@@ -210,6 +241,16 @@ Invoke-Case 'API-PNT-062' '从没领过积分的客户查余额返回 0 而不�
     $ghost = 800000000000 + $script:suffix
     $r = Invoke-RestMethod "$PointService/points/Balance?customerId=$ghost" -TimeoutSec 30
     return $r.success -and $r.data.available -eq 0 -and $r.data.frozen -eq 0
+}
+
+Invoke-Case 'API-PNT-063' '积分中心余额同时下发抵扣汇率、签到规则与即将过期积分' {
+    $r = Invoke-RestMethod "$PointService/points/Balance?customerId=$($script:alice)" -TimeoutSec 30
+    return $r.success `
+        -and $r.data.pointsPerYuan -gt 0 `
+        -and @($r.data.signInRewards).Count -eq 7 `
+        -and $null -ne $r.data.expiringPoints `
+        -and $null -ne $r.data.signedToday `
+        -and $r.data.nextSignInReward -ge 0
 }
 
 Write-Host "`n=== PNT 过期扣减（Scheduled 每天调 /internal/points/Expire）===" -ForegroundColor Cyan

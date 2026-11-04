@@ -82,6 +82,7 @@ export const CONFIGS = {
       },
     ],
   },
+
 };
 
 export default CONFIGS;

@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS cart_item (
     is_deleted   boolean       NOT NULL DEFAULT false,
     deleted_at   timestamp     NULL,
     customer_id  bigint        NOT NULL,
+    -- 归属商户：购物车按店铺分组，下单也是单商户一单；0 仅用于存量行回填前的过渡态
+    merchant_id  bigint        NOT NULL DEFAULT 0,
     sku_id       bigint        NOT NULL,
     product_id   bigint        NOT NULL DEFAULT 0,
     quantity     int           NOT NULL DEFAULT 1,
@@ -21,6 +23,8 @@ CREATE TABLE IF NOT EXISTS cart_item (
     checked       boolean       NOT NULL DEFAULT true,
     CONSTRAINT pk_cart_item PRIMARY KEY (id)
 );
+
+ALTER TABLE cart_item ADD COLUMN IF NOT EXISTS merchant_id bigint NOT NULL DEFAULT 0;
 
 -- 同一个 SKU 在一个客户的购物车里只有一行：加购是「累加到这一行」而不是插新行。
 -- partial unique 让软删的那行不占坑。

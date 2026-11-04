@@ -64,21 +64,40 @@ CREATE TABLE IF NOT EXISTS refund_order (
     amount           numeric(18,2) NOT NULL DEFAULT 0,
     -- 1 整单退 / 2 部分退。运费：整单退含运费，部分退**不退运费**（规格 10.2）
     refund_type      int           NOT NULL DEFAULT 1,
-    -- 10 待审批 / 20 已退款 / 90 已拒绝
+    -- 10 待审批 / 20 已退款 / 90 已拒绝 / 95 客户撤销
     status           int           NOT NULL DEFAULT 10,
     reason           varchar(500)  NOT NULL DEFAULT '',
     reject_reason    varchar(500)  NOT NULL DEFAULT '',
+    images           text          NOT NULL DEFAULT '[]',
     approver_id      bigint        NOT NULL DEFAULT 0,
     approver_name    varchar(64)   NOT NULL DEFAULT '',
     approved_at      timestamp     NULL,
+    -- 审批通过后**订单侧是否已落账**（台账 + refunded_amount + 库存 / 积分副作用）。
+    -- 审批先改本表状态、再回调订单侧；订单侧失败时这里留 false，
+    -- 由 ScheduledService 的 refund_order_sync 任务重放（订单侧按退款单号幂等）。
+    order_synced     boolean       NOT NULL DEFAULT false,
     CONSTRAINT pk_refund_order PRIMARY KEY (id)
 );
+
+ALTER TABLE refund_order ADD COLUMN IF NOT EXISTS images text NOT NULL DEFAULT '[]';
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_refund_no
     ON refund_order (refund_no) WHERE is_deleted = false;
 
 CREATE INDEX IF NOT EXISTS idx_refund_order ON refund_order (order_no, status);
 CREATE INDEX IF NOT EXISTS idx_refund_customer ON refund_order (customer_id, created_at DESC);
+
+-- 老库补列（幂等可重跑）。
+-- 🔴 默认值刻意是 true：加列之前审批的退款单**不参与对账重放** ——
+-- 它们要么早已落账（历史台账用的是 PR{orderNo} 单号），要么已经被人工处理过；
+-- 把它们标成「待同步」会让对账任务反复重放历史数据（重放会因余额已扣而失败，
+-- 更糟的是副作用可能被再做一遍）。新退款单由应用显式写 false，才进入对账范围。
+ALTER TABLE refund_order ADD COLUMN IF NOT EXISTS order_synced boolean NOT NULL DEFAULT true;
+
+-- 对账任务只扫「已退款但订单侧没落账」这一小撮
+CREATE INDEX IF NOT EXISTS idx_refund_order_unsynced
+    ON refund_order (approved_at)
+    WHERE status = 20 AND order_synced = false AND is_deleted = false;
 
 -- ===== 退款单明细：按订单行退 =====
 CREATE TABLE IF NOT EXISTS refund_order_item (

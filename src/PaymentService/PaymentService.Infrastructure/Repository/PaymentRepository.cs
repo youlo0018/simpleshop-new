@@ -59,6 +59,21 @@ public sealed class PaymentRepository : CrudRepository<PaymentOrder>, IPaymentRe
             .CountAsync(ct);
 
     /// <inheritdoc />
+    public async Task<List<PaymentOrder>> ListPendingForReconcileAsync(
+        int limit, CancellationToken ct = default)
+    {
+        var since = DateTime.UtcNow.AddDays(-7);
+
+        return await Db.Select<PaymentOrder>()
+            .Where(a => a.Status == PaymentStatuses.Pending && a.CreatedAt >= since)
+            // 最近的先查：卡住的支付单几乎都出在最近这几分钟
+            .OrderByDescending(a => a.CreatedAt).OrderByDescending(a => a.Id)
+            .Limit(Math.Clamp(limit, 1, 200))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public async Task<PagedPayments> PageAsync(
         int status, string keyword, long platformId, long merchantId,
         int page, int pageSize, CancellationToken ct = default)

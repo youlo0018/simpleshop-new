@@ -1,4 +1,6 @@
 using Collaboration.Domain.Common;
+using Collaboration.Domain.Context;
+using CustomerService.Application.Services;
 using CustomerService.Domain.Entities;
 using CustomerService.Domain.IRepository;
 using MediatR;
@@ -16,20 +18,37 @@ public sealed class QueryAdminCustomersHandler
     : IRequestHandler<QueryAdminCustomersCommand, ApiResponse<PagedResult<AdminCustomerDto>>>
 {
     private readonly ICustomerRepository _customers;
+    private readonly IPlatformDirectoryClient _platforms;
 
     /// <summary>构造处理器。</summary>
     /// <param name="customers">客户仓储。</param>
-    public QueryAdminCustomersHandler(ICustomerRepository customers) => _customers = customers;
+    /// <param name="platforms">平台目录客户端（批量取平台名，列表不显示裸 Id）。</param>
+    public QueryAdminCustomersHandler(ICustomerRepository customers, IPlatformDirectoryClient platforms)
+    {
+        _customers = customers;
+        _platforms = platforms;
+    }
 
     /// <inheritdoc />
     public async Task<ApiResponse<PagedResult<AdminCustomerDto>>> Handle(
         QueryAdminCustomersCommand request, CancellationToken ct)
     {
+        // 平台账号强制只看本平台；超管可按参数筛（0 = 不限）。
+        // 客户表不是 AdminEntityBase，租户 AOP 不覆盖它，这条过滤必须显式写。
+        var ctx = TenantContextHolder.Current;
+        var platformFilter = ctx.IsSuperAdmin ? request.PlatformId : ctx.PlatformId;
+
         var (items, total) = await _customers.PageForAdminAsync(
-            request.Status, request.Keyword, request.Page, request.PageSize, ct).ConfigureAwait(false);
+            request.Status, platformFilter, request.Keyword, request.Page, request.PageSize, ct)
+            .ConfigureAwait(false);
+
+        var names = await _platforms
+            .GetPlatformNamesAsync(items.Select(a => a.PlatformId).Distinct().ToList(), ct)
+            .ConfigureAwait(false);
 
         return ApiResults.Ok(new PagedResult<AdminCustomerDto>(
-            items.Select(AdminCustomerAssembler.Build).ToList(),
+            items.Select(a => AdminCustomerAssembler.Build(
+                a, names.TryGetValue(a.PlatformId, out var n) ? n : string.Empty)).ToList(),
             total, request.Page, request.PageSize));
     }
 }
@@ -39,10 +58,16 @@ public sealed class QueryAdminCustomerDetailHandler
     : IRequestHandler<QueryAdminCustomerDetailCommand, ApiResponse<AdminCustomerDto>>
 {
     private readonly ICustomerRepository _customers;
+    private readonly IPlatformDirectoryClient _platforms;
 
     /// <summary>构造处理器。</summary>
     /// <param name="customers">客户仓储。</param>
-    public QueryAdminCustomerDetailHandler(ICustomerRepository customers) => _customers = customers;
+    /// <param name="platforms">平台目录客户端（取平台名）。</param>
+    public QueryAdminCustomerDetailHandler(ICustomerRepository customers, IPlatformDirectoryClient platforms)
+    {
+        _customers = customers;
+        _platforms = platforms;
+    }
 
     /// <inheritdoc />
     public async Task<ApiResponse<AdminCustomerDto>> Handle(
@@ -55,7 +80,12 @@ public sealed class QueryAdminCustomerDetailHandler
             return ApiResults.Fail<AdminCustomerDto>(BaseApiResponseCode.NotFound, "客户不存在");
         }
 
-        return ApiResults.Ok(AdminCustomerAssembler.Build(customer));
+        var names = await _platforms
+            .GetPlatformNamesAsync([customer.PlatformId], ct)
+            .ConfigureAwait(false);
+
+        return ApiResults.Ok(AdminCustomerAssembler.Build(
+            customer, names.TryGetValue(customer.PlatformId, out var n) ? n : string.Empty));
     }
 }
 
@@ -113,14 +143,22 @@ public sealed class ChangeCustomerStatusHandler
 /// </remarks>
 internal static class AdminCustomerAssembler
 {
-    internal static AdminCustomerDto Build(CustomerEntity c)
+    /// <summary>把客户实体转成后台列表视图（状态 / 性别带中文名，时间已本地格式化）。</summary>
+    /// <param name="c">客户实体。</param>
+    /// <param name="platformName">所属平台名称；取不到时为空串（不显示裸 Id）。</param>
+    /// <returns>后台客户视图。</returns>
+    internal static AdminCustomerDto Build(CustomerEntity c, string platformName)
         => new(
             c.Id, c.CustomerNo, c.CustomerName, c.NickName, c.Phone, c.Avatar,
             c.Gender, GenderName(c.Gender),
             c.Status, CustomerStatuses.NameOf(c.Status),
             c.LastLoginAt?.ToString("yyyy-MM-dd HH:mm:ss"),
-            c.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"));
+            c.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+            platformName);
 
+    /// <summary>性别码转中文名（0/未知一律显示「未知」）。</summary>
+    /// <param name="gender">性别码：1 男 / 2 女。</param>
+    /// <returns>中文名。</returns>
     private static string GenderName(int gender)
         => gender switch
         {

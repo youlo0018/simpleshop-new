@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 构建后端（.NET 10）与两个前端（后台 + 商城 H5）。
+# 构建后端（.NET 10）与后台前端。
 #
 #   ./build.sh               # 全量构建
 #   ./build.sh --backend     # 只构建后端
@@ -45,7 +45,6 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "web" ]; then
     ok "$label 构建完成"
   }
   build_front "$ROOT_DIR/apps/admin-vue" "build" "后台管理端"
-  build_front "$ROOT_DIR/apps/user-uniapp" "build:h5" "商城 H5"
 fi
 
 ok "全部构建完成"

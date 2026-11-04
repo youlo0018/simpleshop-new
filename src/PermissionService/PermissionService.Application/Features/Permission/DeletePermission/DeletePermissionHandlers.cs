@@ -1,7 +1,5 @@
 using Collaboration.Domain.Common;
-using FreeSql;
 using MediatR;
-using PermissionService.Domain.Entities;
 using PermissionService.Domain.IRepository;
 
 namespace PermissionService.Application.Features.Permission.DeletePermission;
@@ -14,16 +12,10 @@ namespace PermissionService.Application.Features.Permission.DeletePermission;
 public sealed class DeletePermissionHandler : IRequestHandler<DeletePermissionCommand, ApiResponse>
 {
     private readonly IPermissionRepository _permissions;
-    private readonly IFreeSql _db;
 
     /// <summary>构造处理器。</summary>
     /// <param name="permissions">权限点仓储。</param>
-    /// <param name="db">FreeSql 实例，用于级联清理角色绑定。</param>
-    public DeletePermissionHandler(IPermissionRepository permissions, IFreeSql db)
-    {
-        _permissions = permissions;
-        _db = db;
-    }
+    public DeletePermissionHandler(IPermissionRepository permissions) => _permissions = permissions;
 
     /// <summary>执行删除。</summary>
     /// <param name="request">删除命令。</param>
@@ -42,7 +34,7 @@ public sealed class DeletePermissionHandler : IRequestHandler<DeletePermissionCo
         await _permissions.DeleteAsync(request.PermissionId, ct);
 
         // 级联清理角色绑定，避免留下指向已删权限点的悬空记录
-        await _db.Delete<RolePermission>().Where(a => a.PermissionId == request.PermissionId).ExecuteAffrowsAsync(ct);
+        await _permissions.RemoveRoleBindingsAsync(request.PermissionId, ct);
         return ApiResponseFactory.Ok("删除成功");
     }
 }

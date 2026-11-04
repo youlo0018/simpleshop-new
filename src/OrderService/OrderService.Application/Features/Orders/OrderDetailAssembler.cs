@@ -15,8 +15,11 @@ public static class OrderDetailAssembler
     /// <summary>用已查出的订单与订单行组装详情。</summary>
     /// <param name="order">订单实体。</param>
     /// <param name="items">订单行。</param>
+    /// <param name="imagesBySku">SKU Id → 商品图；可选，取不到时订单行图片为空串。</param>
     /// <returns>详情 DTO。</returns>
-    public static OrderDetailDto Build(Order order, IReadOnlyCollection<OrderItem> items)
+    public static OrderDetailDto Build(
+        Order order, IReadOnlyCollection<OrderItem> items,
+        IReadOnlyDictionary<long, string>? imagesBySku = null)
         => new(
             order.Id, order.OrderNo, order.Status, OrderStatusMachine.NameOf(order.Status),
             OrderStatusMachine.CanCancel(order.Status),
@@ -29,7 +32,8 @@ public static class OrderDetailAssembler
                 a.Id, a.SkuId, a.SpuId, a.ProductName, a.SkuSpecText,
                 a.Price, a.Quantity, a.OriginalAmount,
                 a.ActivityDiscount, a.CouponDiscount, a.PayableAmount, a.DeliveryType,
-                a.SourceType)).ToList(),
+                a.SourceType,
+                Image: imagesBySku?.GetValueOrDefault(a.SkuId) ?? string.Empty)).ToList(),
             order.LogisticsCompanyId,
             order.LogisticsCompanyName,
             order.TrackingNo,
@@ -47,5 +51,25 @@ public static class OrderDetailAssembler
                 items.Sum(a => a.ActivityDiscount), 2, MidpointRounding.AwayFromZero),
             // 发货内容：虚拟商品是卡号 / 激活码（客户凭它收货），快递是发货备注。
             // 未发货为空串，与其它字符串字段的非空约定一致。
-            order.ShipRemark);
+            order.ShipRemark,
+            PickupCode: "",
+            // 与订单列表使用同一条退款窗口规则，避免列表有入口、详情却没有。
+            OrderStatusMachine.CanRefund(order.Status, items.Select(a => a.DeliveryType)));
+
+    /// <summary>按订单状态与配送方式解析自提取货码。</summary>
+    /// <param name="order">订单实体。</param>
+    /// <param name="items">订单行。</param>
+    /// <param name="codec">RSA 取货码编解码器。</param>
+    /// <returns>待取货且含自提行时返回取货码，其余情况返回空串。</returns>
+    /// <remarks>
+    /// 只在「待取货」下发：其它状态要么还没备货（客户拿到码也提不了货），
+    /// 要么已经核销（码已失效）。每次调用重新加密是刻意的 ——
+    /// PKCS#1 带随机填充，同一订单号每次密文不同，但都能解回订单号，不影响核销。
+    /// </remarks>
+    public static string ResolvePickupCode(
+        Order order, IReadOnlyCollection<OrderItem> items, IPickupCodeCodec codec)
+        => order.Status == OrderStatuses.PendingPickup
+           && items.Any(a => a.DeliveryType == DeliveryTypes.SelfPickup)
+            ? codec.Encrypt(order.OrderNo)
+            : string.Empty;
 }

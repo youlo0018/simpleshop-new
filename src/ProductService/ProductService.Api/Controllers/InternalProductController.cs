@@ -1,10 +1,10 @@
 using Collaboration.Domain.Common;
-using FreeSql;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 using ProductService.Application.Features.Shop;
 using ProductService.Application.Features.Internal;
 using ProductService.Domain.Entities;
+using ProductService.Domain.IRepository;
 
 namespace ProductService.Api.Controllers;
 
@@ -18,15 +18,19 @@ namespace ProductService.Api.Controllers;
 [Route("internal/products")]
 public sealed class InternalProductController : ControllerBase
 {
-    private readonly IFreeSql _db;
+    private readonly IProductRepository _products;
+    private readonly ILogisticsCompanyRepository _logistics;
     private readonly IMediator _mediator;
 
     /// <summary>构造控制器。</summary>
-    /// <param name="db">FreeSql 实例。</param>
+    /// <param name="products">商品仓储。</param>
+    /// <param name="logistics">物流公司仓储。</param>
     /// <param name="mediator">MediatR 入口。</param>
-    public InternalProductController(IFreeSql db, IMediator mediator)
+    public InternalProductController(
+        IProductRepository products, ILogisticsCompanyRepository logistics, IMediator mediator)
     {
-        _db = db;
+        _products = products;
+        _logistics = logistics;
         _mediator = mediator;
     }
 
@@ -103,13 +107,15 @@ public sealed class InternalProductController : ControllerBase
 
     /// <summary>按 SKU Id 集合取快照信息。</summary>
     /// <param name="skuIds">SKU Id 集合，逗号分隔，最多 200 个。</param>
+    /// <param name="ct">取消令牌。</param>
     /// <returns>命中的 SKU 快照列表。没命中的 SKU 不会出现在结果里。</returns>
     /// <remarks>
     /// 只返回**启用**的 SKU：购物车里留着已停用的 SKU 会让下单时算出奇怪的金额，
     /// 而下单时真正拦它的是库存与订单服务，这里先不给出明显不可用的数据。
     /// </remarks>
     [HttpGet("skus")]
-    public ActionResult<ApiResponse<List<SkuSnapshot>>> Skus([FromQuery] string skuIds)
+    public async Task<ActionResult<ApiResponse<List<SkuSnapshot>>>> Skus(
+        [FromQuery] string skuIds, CancellationToken ct)
     {
         var ids = (skuIds ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -124,26 +130,30 @@ public sealed class InternalProductController : ControllerBase
             return BadRequest(new { error = "invalid_request", error_description = "请提供至少一个 SKU Id" });
         }
 
-        var skus = _db.Select<Sku>().Where(a => ids.Contains(a.Id) && a.Status == 1).ToList();
+        var skus = await _products.GetSkusByIdsAsync(ids, onlyEnabled: true, ct).ConfigureAwait(false);
 
         // 配送方式挂在 SPU 上不在 SKU 上，但下单时要的是「这个 SKU 怎么送」，
         // 所以在这里 join 一次带出来，省得调用方自己再查一遍商品。
         var spuIds = skus.Select(a => a.ProductId).Distinct().ToArray();
-        var deliveryBySpu = _db.Select<Product>()
-            .Where(a => spuIds.Contains(a.Id))
-            .ToList(a => new { a.Id, a.DeliveryType })
-            .ToDictionary(a => a.Id, a => a.DeliveryType);
+        var spuById = (await _products.GetByIdsAsync(spuIds, ct).ConfigureAwait(false))
+            .ToDictionary(a => a.Id);
 
-        var list = skus.Select(a => new SkuSnapshot(
-            a.Id, a.ProductId, a.SkuCode, a.SkuName, a.SkuSpecText, a.Price, a.OriginalPrice, a.Image, a.Status,
-            deliveryBySpu.GetValueOrDefault(a.ProductId, DeliveryTypes.PhysicalExpress)))
-            .ToList();
+        var list = skus.Select(a =>
+        {
+            spuById.TryGetValue(a.ProductId, out var spu);
+            return new SkuSnapshot(
+                a.Id, a.ProductId, a.SkuCode, a.SkuName, a.SkuSpecText,
+                a.Price, a.OriginalPrice, a.Image, a.Status,
+                spu?.DeliveryType ?? DeliveryTypes.PhysicalExpress,
+                spu?.MerchantId ?? 0);
+        }).ToList();
 
         return Ok(ApiResults.Ok(list));
     }
 
     /// <summary>下单前的**权威定价与可售性**校验（订单服务调用）。</summary>
     /// <param name="skuIds">SKU Id 集合，逗号分隔，最多 50 个。</param>
+    /// <param name="ct">取消令牌。</param>
     /// <returns>逐 SKU 的售价与可售状态；查不到的 SKU 不在结果里。</returns>
     /// <remarks>
     /// 与上面的 <c>skus</c> 有两处刻意不同：
@@ -158,7 +168,8 @@ public sealed class InternalProductController : ControllerBase
     /// 没有它，订单服务只能相信客户端报的价格，于是把 25.50 的商品按 0.01 元下单也能成交。</para>
     /// </remarks>
     [HttpGet("skus/pricing")]
-    public ActionResult<ApiResponse<List<SkuPricing>>> SkuPricing([FromQuery] string skuIds)
+    public async Task<ActionResult<ApiResponse<List<SkuPricing>>>> SkuPricing(
+        [FromQuery] string skuIds, CancellationToken ct)
     {
         var ids = (skuIds ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -173,12 +184,10 @@ public sealed class InternalProductController : ControllerBase
             return BadRequest(new { error = "invalid_request", error_description = "请提供至少一个 SKU Id" });
         }
 
-        var skus = _db.Select<Sku>().Where(a => ids.Contains(a.Id)).ToList();
+        var skus = await _products.GetSkusByIdsAsync(ids, onlyEnabled: false, ct).ConfigureAwait(false);
         var spuIds = skus.Select(a => a.ProductId).Distinct().ToArray();
 
-        var spus = _db.Select<Product>()
-            .Where(a => spuIds.Contains(a.Id))
-            .ToList(a => new { a.Id, a.AuditStatus, a.Status, a.MerchantId, a.PlatformId, a.DeliveryType })
+        var spus = (await _products.GetByIdsAsync(spuIds, ct).ConfigureAwait(false))
             .ToDictionary(a => a.Id);
 
         var list = skus.Select(a =>
@@ -204,6 +213,7 @@ public sealed class InternalProductController : ControllerBase
 
     /// <summary>按 SPU Id 集合取收藏页展示摘要。</summary>
     /// <param name="spuIds">SPU Id 集合，逗号分隔，最多 50 个。</param>
+    /// <param name="ct">取消令牌。</param>
     /// <returns>命中的商品摘要；未命中的商品不会出现在结果里。</returns>
     /// <remarks>
     /// <para>存在的理由：收藏记录只存 SPU Id，若收藏页逐个调商品详情，单页最多 20 次跨服务请求。
@@ -214,7 +224,8 @@ public sealed class InternalProductController : ControllerBase
     /// 若这里过滤掉，用户会以为收藏记录凭空消失了。</para>
     /// </remarks>
     [HttpGet("spu-summaries")]
-    public ActionResult<ApiResponse<List<SpuSummary>>> SpuSummaries([FromQuery] string spuIds)
+    public async Task<ActionResult<ApiResponse<List<SpuSummary>>>> SpuSummaries(
+        [FromQuery] string spuIds, CancellationToken ct)
     {
         var ids = (spuIds ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -230,9 +241,7 @@ public sealed class InternalProductController : ControllerBase
         }
 
         // 先取实体再在内存里拼中文名：NameOf 是 C# 方法，FreeSql 无法把它翻译成 SQL。
-        var products = _db.Select<Product>()
-            .Where(a => ids.Contains(a.Id))
-            .ToList();
+        var products = await _products.GetByIdsAsync(ids, ct).ConfigureAwait(false);
 
         var list = products.Select(a => new SpuSummary(
                 a.Id,
@@ -256,6 +265,7 @@ public sealed class InternalProductController : ControllerBase
 
     /// <summary>按 Id 取物流公司（订单服务发货时用）。</summary>
     /// <param name="logisticsId">物流公司 Id。</param>
+    /// <param name="ct">取消令牌。</param>
     /// <returns>物流公司 Id 与名称；查不到返回 404。</returns>
     /// <remarks>
     /// 订单服务发货时要往订单上写一份<b>公司名快照</b>，但物流公司字典在商品服务里。
@@ -267,18 +277,18 @@ public sealed class InternalProductController : ControllerBase
     /// 已经发出去的单必须还能查到公司名。</para>
     /// </remarks>
     [HttpGet("logistics-companies/{logisticsId:long}")]
-    public ActionResult<ApiResponse<InternalLogisticsCompany>> LogisticsCompany(long logisticsId)
+    public async Task<ActionResult<ApiResponse<InternalLogisticsCompany>>> LogisticsCompany(
+        long logisticsId, CancellationToken ct)
     {
-        var company = _db.Select<LogisticsCompany>()
-            .Where(a => a.Id == logisticsId)
-            .First(a => new InternalLogisticsCompany(a.Id, a.CompanyName, a.Status));
+        var company = await _logistics.GetByIdAsync(logisticsId, ct).ConfigureAwait(false);
 
         if (company is null)
         {
             return NotFound(new { error = "not_found", error_description = "物流公司不存在" });
         }
 
-        return Ok(ApiResults.Ok(company));
+        return Ok(ApiResults.Ok(new InternalLogisticsCompany(
+            company.Id, company.CompanyName, company.Status)));
     }
 }
 
@@ -299,9 +309,11 @@ public sealed record InternalLogisticsCompany(long LogisticsId, string CompanyNa
 /// <param name="Image">SKU 图。</param>
 /// <param name="Status">1 启用 / 2 停用。</param>
 /// <param name="DeliveryType">配送方式，挂在 SPU 上。见 <see cref="DeliveryTypes"/>。</param>
+/// <param name="MerchantId">归属商户 Id，0 表示平台自营；购物车按店铺分组要用。</param>
 public sealed record SkuSnapshot(
     long SkuId, long ProductId, string SkuCode, string SkuName, string SkuSpecText,
-    decimal Price, decimal OriginalPrice, string Image, int Status, int DeliveryType);
+    decimal Price, decimal OriginalPrice, string Image, int Status, int DeliveryType,
+    long MerchantId = 0);
 
 /// <summary>SKU 权威定价与可售状态（订单服务下单前校验用）。</summary>
 /// <param name="SkuId">SKU Id。</param>

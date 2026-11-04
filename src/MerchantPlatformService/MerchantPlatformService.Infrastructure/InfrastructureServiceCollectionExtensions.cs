@@ -16,6 +16,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IMerchantRepository, MerchantRepository>();
         services.AddScoped<IPlatformConfigRepository, PlatformConfigRepository>();
         services.AddScoped<IDesignRepository, DesignRepository>();
+        services.AddScoped<IPlatformNoticeRepository, PlatformNoticeRepository>();
         return services;
     }
 }

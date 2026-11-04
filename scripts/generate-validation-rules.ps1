@@ -109,8 +109,7 @@ foreach ($p in $rules.PSObject.Properties) {
 [void]$js.AppendLine('export default VALIDATION_RULES;')
 
 $targets = @(
-    (Join-Path $root 'apps\admin-vue\src\utils\validation-rules.js'),
-    (Join-Path $root 'apps\user-uniapp\src\common\validation-rules.js')
+    (Join-Path $root 'apps\admin-vue\src\utils\validation-rules.js')
 )
 foreach ($t in $targets) {
     New-Item -ItemType Directory -Path (Split-Path $t) -Force | Out-Null

@@ -1,232 +1,159 @@
 <template>
-  <view class="page address-page">
-    <AppHeader title="收货地址" :subtitle="`${items.length} 条`" back>
-      <text class="header-action" @tap="toCreate">新增</text>
-    </AppHeader>
-
-    <view v-if="loading" class="loading">正在加载…</view>
-    <view v-else-if="items.length" class="address-list">
-      <view
-        v-for="item in items"
-        :key="item.addressId"
-        class="address-card"
-        @tap="selectOrEdit(item)"
-      >
-        <view class="address-card__top">
-          <text class="address-card__name">{{ item.consigneeName }}</text>
-          <text class="address-card__phone">{{ item.consigneePhone }}</text>
-          <text v-if="item.isDefault" class="address-card__default">默认</text>
-          <text v-if="item.label" class="address-card__label">{{ item.label }}</text>
-        </view>
-        <text class="address-card__region">{{ item.regionPath }} {{ item.detailAddress }}</text>
-        <view class="address-card__actions">
-          <text v-if="!item.isDefault" class="address-card__action" @tap.stop="setDefault(item)">
-            设为默认
-          </text>
-          <text class="address-card__action" @tap.stop="toEdit(item)">编辑</text>
-          <text class="address-card__action address-card__action--danger" @tap.stop="remove(item)">
-            删除
-          </text>
-        </view>
+  <view class="addresses page-shell">
+    <AppHeader title="收货地址" back />
+    <view v-for="item in items" :key="item.addressId" class="address-card card" @click="choose(item)">
+      <view class="address-card__head">
+        <text>{{ item.consigneeName }}</text>
+        <text>{{ item.consigneePhone }}</text>
+        <text v-if="item.label" class="tag">{{ item.label }}</text>
+        <text v-if="item.isDefault" class="tag tag--default">默认</text>
+      </view>
+      <text class="address-card__detail">{{ item.regionPath }} {{ item.detailAddress }}</text>
+      <view class="address-card__actions" @click.stop>
+        <button v-if="!item.isDefault" @click="setDefault(item)"><AppIcon type="checkmarkempty" :size="14" color="#8a8a8f" />设为默认</button>
+        <button @click="edit(item)"><AppIcon type="compose" :size="14" color="#8a8a8f" />编辑</button>
+        <button class="danger" @click="remove(item)"><AppIcon type="trash" :size="14" color="#ff3b30" />删除</button>
       </view>
     </view>
-    <view v-else class="empty">
-      <text class="empty__title">还没有收货地址</text>
-      <text class="empty__desc">新增一条地址，下单时就能直接选择</text>
-    </view>
-
-    <button class="button-primary address-page__add" @tap="toCreate">新增收货地址</button>
+    <EmptyState v-if="!items.length" title="还没有收货地址" icon="location" />
+    <button class="btn-primary add-btn" @click="add">
+      <AppIcon type="plusempty" :size="18" color="#ffffff" />
+      <text>新增收货地址</text>
+    </button>
   </view>
 </template>
 
 <script setup lang="ts">
-import { onLoad, onShow } from '@dcloudio/uni-app';
 import { ref } from 'vue';
+import { onLoad, onShow } from '@dcloudio/uni-app';
 import AppHeader from '@/components/AppHeader.vue';
+import EmptyState from '@/components/EmptyState.vue';
+import AppIcon from '@/components/AppIcon.vue';
 import { request } from '@/core/http';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
-const loading = ref(true);
 const items = ref<any[]>([]);
 const selecting = ref(false);
 
 async function load() {
   session.restore();
-  if (!session.profile?.customerId) {
-    uni.navigateTo({ url: '/pages/login/index' });
-    return;
-  }
-
-  loading.value = true;
-  try {
-    const data = await request<any>('/gateway/customers/addresses/List', {
-      method: 'POST',
-      data: { customerId: session.profile.customerId, page: 1, pageSize: 100 },
-      silent: true,
-    });
-    items.value = data?.items || [];
-  } finally {
-    loading.value = false;
-  }
+  const result = await request<any>('/gateway/customers/addresses/List', {
+    method: 'POST',
+    data: { customerId: session.profile?.customerId, page: 1, pageSize: 100 },
+  });
+  items.value = result.items || [];
 }
 
-function toCreate() {
-  uni.navigateTo({ url: '/pages/address/form' });
-}
-
-function toEdit(item: any) {
-  uni.navigateTo({ url: `/pages/address/form?addressId=${item.addressId}` });
-}
-
-function selectOrEdit(item: any) {
-  if (!selecting.value) {
-    toEdit(item);
-    return;
-  }
-
-  uni.setStorageSync('simpleshop_selected_address', item);
+function choose(item: any) {
+  if (!selecting.value) return;
+  uni.setStorageSync('simpleshop:selected-address', item);
   uni.navigateBack();
 }
 
 async function setDefault(item: any) {
   await request('/gateway/customers/addresses/SetDefault', {
     method: 'POST',
-    data: { customerId: session.profile?.customerId, addressId: item.addressId },
+    data: { customerId: session.profile!.customerId, addressId: item.addressId },
   });
-  uni.showToast({ title: '已设为默认', icon: 'success' });
-  await load();
+  load();
+}
+
+function edit(item: any) {
+  uni.navigateTo({ url: `/pages/address/form?id=${item.addressId}` });
 }
 
 async function remove(item: any) {
-  const confirmed = await new Promise<boolean>((resolve) => {
-    uni.showModal({
-      title: '删除地址',
-      content: `确定删除「${item.consigneeName} ${item.regionPath}」这条地址吗？`,
-      success: (result) => resolve(result.confirm),
-      fail: () => resolve(false),
-    });
-  });
+  const confirmed = await modal('删除地址', `${item.consigneeName} ${item.regionPath}${item.detailAddress}`);
   if (!confirmed) return;
-
   await request('/gateway/customers/addresses/Delete', {
     method: 'POST',
-    data: { customerId: session.profile?.customerId, addressId: item.addressId },
+    data: { customerId: session.profile!.customerId, addressId: item.addressId },
   });
-  uni.showToast({ title: '已删除', icon: 'success' });
-  await load();
+  load();
 }
 
-onLoad((options) => {
-  selecting.value = String(options?.select || '') === '1';
-});
+function add() {
+  uni.navigateTo({ url: '/pages/address/form' });
+}
 
+function modal(title: string, content: string) {
+  return new Promise<boolean>((resolve) => {
+    uni.showModal({ title, content, success: (result) => resolve(result.confirm), fail: () => resolve(false) });
+  });
+}
+
+onLoad((query) => {
+  selecting.value = String(query?.select || '') === '1';
+});
 onShow(load);
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.address-page {
-  padding-bottom: 180rpx;
-}
-
-.header-action {
-  color: $brand;
-  font-size: $font-sub;
-}
-
-.address-list {
-  display: flex;
-  flex-direction: column;
-  gap: $space-3;
-}
-
 .address-card {
-  padding: $space-4;
-  border-radius: $radius-lg;
-  background: $bg-card;
+  padding: 24rpx;
+  margin-top: 20rpx;
 }
 
-.address-card__top {
+.address-card__head {
   display: flex;
   align-items: center;
-  gap: $space-2;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  font-size: 27rpx;
+  font-weight: 500;
 }
 
-.address-card__name {
-  font-weight: 600;
+.tag {
+  padding: 3rpx 10rpx;
+  border-radius: 8rpx;
+  background: #f2f3f5;
+  color: $muted;
+  font-size: 20rpx;
+  font-weight: 400;
 }
 
-.address-card__phone {
-  color: $text-2;
-  font-size: $font-sub;
-}
-
-.address-card__default {
-  padding: 2rpx 12rpx;
-  border-radius: $radius-sm;
-  background: rgba(0, 113, 227, 0.1);
+.tag--default {
+  background: #eef4ff;
   color: $brand;
-  font-size: $font-note;
 }
 
-.address-card__label {
-  padding: 2rpx 12rpx;
-  border-radius: $radius-sm;
-  background: $bg-page;
-  color: $text-2;
-  font-size: $font-note;
-}
-
-.address-card__region {
+.address-card__detail {
   display: block;
-  margin-top: $space-2;
-  color: $text-2;
-  font-size: $font-sub;
+  margin-top: 10rpx;
+  color: $muted;
+  font-size: 23rpx;
   line-height: 1.5;
 }
 
 .address-card__actions {
   display: flex;
   justify-content: flex-end;
-  gap: $space-4;
-  margin-top: $space-3;
-  padding-top: $space-3;
-  border-top: 1rpx solid $hairline;
+  gap: 16rpx;
+  margin-top: 18rpx;
+  padding-top: 16rpx;
+  border-top: 1rpx solid $line;
 }
 
-.address-card__action {
-  color: $text-2;
-  font-size: $font-note;
+.address-card__actions button {
+  display: flex;
+  align-items: center;
+  gap: 4rpx;
+  padding: 8rpx 0;
+  border: 0;
+  background: transparent;
+  color: $muted;
+  font-size: 22rpx;
 }
 
-.address-card__action--danger {
+.address-card__actions button.danger {
   color: $danger;
 }
 
-.empty {
-  padding: $space-6 $space-4;
-  text-align: center;
-}
-
-.empty__title {
-  display: block;
-  font-size: $font-heading;
-  font-weight: 600;
-}
-
-.empty__desc {
-  display: block;
-  margin-top: $space-2;
-  color: $text-2;
-  font-size: $font-sub;
-}
-
-.address-page__add {
-  position: fixed;
-  right: $space-4;
-  bottom: calc(env(safe-area-inset-bottom) + $space-4);
-  left: $space-4;
+.add-btn {
+  gap: 8rpx;
+  margin-top: 30rpx;
 }
 </style>

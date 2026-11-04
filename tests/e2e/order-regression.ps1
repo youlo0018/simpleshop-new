@@ -38,6 +38,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()
@@ -522,6 +540,36 @@ Invoke-Case 'API-ORD-013' '没占券就不该动券，customerId 必填校验生
         receiverName = 'a'; receiverPhone = '13800000000'; receiverAddress = 'b'; lines = @()
     }
     return (-not $bad.success) -and ($bad.errors.PSObject.Properties.Name -contains 'CustomerId')
+}
+
+Invoke-Case 'API-ORD-014a' '🔴 实物快递缺收货地址被拒' {
+    $body = New-OrderBody 'addr-required'
+    $body.receiverAddress = ''
+    $r = OrderPost 'Create' $body
+    return (-not $r.success) -and $r.message -match '参数校验失败' `
+        -and ($r.errors.PSObject.Properties.Name -contains 'ReceiverAddress')
+}
+
+Invoke-Case 'API-ORD-014b' '🔴 自提单只填姓名和手机号即可下单' {
+    $body = New-OrderBody 'pickup-contact' -DeliveryType 3
+    $body.receiverAddress = ''
+    $r = OrderPost 'Create' $body
+    if ($r.success) {
+        OrderPost 'Cancel' @{ customerId = $script:customerId; orderNo = $r.data.orderNo } | Out-Null
+    }
+    return $r.success -and $r.data.orderNo.Length -gt 0
+}
+
+Invoke-Case 'API-ORD-014c' '🔴 纯虚拟单不要求任何收货信息' {
+    $body = New-OrderBody 'virtual-no-contact' -DeliveryType 2
+    $body.receiverName = ''
+    $body.receiverPhone = ''
+    $body.receiverAddress = ''
+    $r = OrderPost 'Create' $body
+    if ($r.success) {
+        OrderPost 'Cancel' @{ customerId = $script:customerId; orderNo = $r.data.orderNo } | Out-Null
+    }
+    return $r.success -and $r.data.orderNo.Length -gt 0
 }
 
 Write-Host "`n=== ORD 幂等（P0）===" -ForegroundColor Cyan
@@ -1790,6 +1838,18 @@ Invoke-Case 'API-ORD-120' '清理测试商品与分类' {
             -Body (@{ categoryId = $n.id } | ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 30 | Out-Null
     }
     return $true
+}
+
+Write-Host "`n=== 0 元订单结清补偿入口 ===" -ForegroundColor Cyan
+
+Invoke-Case 'API-ORD-160' '0 元订单结清补偿入口可用（失败订单由它重放占用结清）' {
+    # 0 元单没有支付回调，创建时当场结清占用；任一步失败就靠这条入口重放
+    # （下游全部按 bizNo 幂等，重放不会重复扣减）。ScheduledService 每 2 分钟调它一次。
+    $r = Invoke-RestMethod "$Order/internal/orders/settle-zero-pay" -Method Post `
+        -Body (@{ limit = 50 } | ConvertTo-Json) `
+        -ContentType 'application/json' -TimeoutSec 60
+    Write-Host ("        {0}" -f $r.message) -ForegroundColor DarkGray
+    return $r.success -and $null -ne $r.data.scanned -and $null -ne $r.data.settled
 }
 
 Write-Host "`n=== 汇总 ===" -ForegroundColor Cyan

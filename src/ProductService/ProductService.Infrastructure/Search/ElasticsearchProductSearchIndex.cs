@@ -33,7 +33,9 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
     /// <param name="options">搜索配置。</param>
     /// <param name="logger">日志器。</param>
     public ElasticsearchProductSearchIndex(
-        HttpClient http, IOptions<ProductSearchOptions> options, ILogger<ElasticsearchProductSearchIndex> logger)
+        HttpClient http,
+        IOptions<ProductSearchOptions> options,
+        ILogger<ElasticsearchProductSearchIndex> logger)
     {
         _http = http;
         _logger = logger;
@@ -55,7 +57,9 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
 
         if (response.IsSuccessStatusCode)
         {
-            _logger.LogInformation("已创建商品索引 {Index}，分词器 ik_max_word（索引）/ ik_smart（查询）", _index);
+            _logger.LogInformation(
+                "已创建商品索引 {Index}，分词器 ik_max_word（索引）/ ik_smart（查询），同义词在查询层展开",
+                _index);
             return true;
         }
 
@@ -79,6 +83,7 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
         var json = JsonContent.Create(new Dictionary<string, object?>
         {
             ["productId"] = product.Id,
+            ["platformId"] = product.PlatformId,
             ["spuName"] = product.SpuName,
             ["subTitle"] = product.SubTitle,
             ["brandId"] = product.BrandId,
@@ -151,8 +156,29 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
     }
 
     /// <inheritdoc />
+    public async Task<bool> RefreshAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _http.PostAsync($"{_index}/_refresh", null, ct).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode) return true;
+
+            _logger.LogWarning(
+                "刷新商品索引 {Index} 失败：HTTP {Code}", _index, (int)response.StatusCode);
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "刷新商品索引 {Index} 异常", _index);
+            return false;
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<long>> SearchIdsAsync(
-        string keyword, long categoryId, long brandId, int from, int size, CancellationToken ct = default)
+        IReadOnlyList<SearchKeywordVariant> keywords,
+        long platformId, long categoryId, long brandId, int from, int size,
+        CancellationToken ct = default)
     {
         // 前台只搜「审核通过 + 已上架」。这道过滤必须放在 ES 里，不能搜出全部 Id 再回库过滤——
         // 否则未审核商品会占用前 size 条的名额，用户看到的结果里混着下架商品，或者直接搜不到东西。
@@ -162,22 +188,19 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
             Term("status", ListingStatuses.OnShelf)
         };
 
+        if (platformId > 0) filters.Add(Term("platformId", platformId));
         if (categoryId > 0) filters.Add(Term("categoryId", categoryId));
         if (brandId > 0) filters.Add(Term("brandId", brandId));
 
-        var kw = (keyword ?? string.Empty).Trim();
+        var queryKeywords = (keywords ?? [])
+            .Where(a => !string.IsNullOrWhiteSpace(a.Text))
+            .GroupBy(a => a.Text.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(a => a.OrderByDescending(b => b.Boost).First())
+            .ToArray();
 
-        // multi_match 覆盖商品名与副标题：用户搜的词可能只出现在其中之一
-        object must = kw.Length > 0
-            ? new Dictionary<string, object?>
-            {
-                ["multi_match"] = new Dictionary<string, object?>
-                {
-                    ["query"] = kw,
-                    ["fields"] = new[] { "spuName^3", "subTitle", "brandName^2", "categoryName" }
-                }
-            }
-            : new Dictionary<string, object?> { ["match_all"] = new Dictionary<string, object?>() };
+        var keywordQueries = queryKeywords
+            .Select(a => MultiMatch(a.Text, a.Boost))
+            .ToArray();
 
         var body = JsonContent.Create(new Dictionary<string, object?>
         {
@@ -189,7 +212,25 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
             {
                 ["bool"] = new Dictionary<string, object?>
                 {
-                    ["must"] = new[] { must },
+                    ["must"] = keywordQueries.Length == 0
+                        ? new object[]
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["match_all"] = new Dictionary<string, object?>()
+                            }
+                        }
+                        : new object[]
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["bool"] = new Dictionary<string, object?>
+                                {
+                                    ["should"] = keywordQueries,
+                                    ["minimum_should_match"] = 1
+                                }
+                            }
+                        },
                     ["filter"] = filters.ToArray()
                 }
             },
@@ -232,39 +273,69 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
     /// <inheritdoc />
     public async Task<IReadOnlyCollection<long>> GetIndexedIdsAsync(CancellationToken ct = default)
     {
-        // 只要 _id，不要 _source。补偿对账只关心「哪些商品在索引里」，
-        // 把整份文档拉回来纯属浪费带宽和内存。
-        var body = JsonContent.Create(new Dictionary<string, object?>
-        {
-            ["size"] = MaxIndexedIdsProbe,
-            ["_source"] = false,
-            ["query"] = new Dictionary<string, object?>
-            {
-                ["match_all"] = new Dictionary<string, object?>()
-            },
-            // 用 _doc 排序拿全量，不排序时 ES 只保证前 size 条是「某 10000 条里最相关的前 10000 条」，
-            // 而我们没有 query 概念，相关度排序毫无意义，结果会是随机的一批。
-            ["sort"] = new object[] { Sort("_doc", "asc") }
-        }, options: JsonOptions);
+        var ids = new List<long>();
+
+        // 🔴 用 search_after 翻页把**全量** Id 取回来。
+        // ES 单次 size 上限是 1 万：只取第一页时，目录超过 1 万之后，
+        // 窗口外的商品每一轮都被当成「索引里没有」重复补写，孤儿清理也会漏掉它们。
+        // 排序键用 productId（mapping 里是 long、天然唯一），search_after 靠它稳定翻页；
+        // 不用 _doc 排序 —— 它不保证跨页不重不漏。
+        long? afterProductId = null;
 
         try
         {
-            var response = await _http
-                .PostAsync($"{_index}/_search", body, ct).ConfigureAwait(false);
-
-            if (!response.IsSuccessStatusCode)
+            while (true)
             {
-                _logger.LogError("读取索引商品 Id 失败：HTTP {Code}", (int)response.StatusCode);
-                return Array.Empty<long>();
-            }
+                // 只要 _id，不要 _source。补偿对账只关心「哪些商品在索引里」，
+                // 把整份文档拉回来纯属浪费带宽和内存。
+                var payload = new Dictionary<string, object?>
+                {
+                    ["size"] = MaxIndexedIdsProbe,
+                    ["_source"] = false,
+                    ["query"] = new Dictionary<string, object?>
+                    {
+                        ["match_all"] = new Dictionary<string, object?>()
+                    },
+                    ["sort"] = new object[] { Sort("productId", "asc") }
+                };
 
-            var result = await response.Content
-                .ReadFromJsonAsync<IdOnlySearchResponse>(JsonOptions, ct).ConfigureAwait(false);
+                if (afterProductId is not null)
+                {
+                    payload["search_after"] = new object[] { afterProductId.Value };
+                }
 
-            var ids = new List<long>();
-            foreach (var hit in result?.Hits?.Hits ?? Array.Empty<IdOnlyHit>())
-            {
-                if (long.TryParse(hit.Id, out var id) && id > 0) ids.Add(id);
+                var body = JsonContent.Create(payload, options: JsonOptions);
+                var response = await _http
+                    .PostAsync($"{_index}/_search", body, ct).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError("读取索引商品 Id 失败：HTTP {Code}", (int)response.StatusCode);
+                    // 已经翻到的部分照常返回：对账少几页总比整轮放弃强
+                    break;
+                }
+
+                var result = await response.Content
+                    .ReadFromJsonAsync<IdOnlySearchResponse>(JsonOptions, ct).ConfigureAwait(false);
+
+                var hits = result?.Hits?.Hits ?? Array.Empty<IdOnlyHit>();
+                if (hits.Length == 0) break;
+
+                long lastId = 0;
+                foreach (var hit in hits)
+                {
+                    if (long.TryParse(hit.Id, out var id) && id > 0)
+                    {
+                        ids.Add(id);
+                        lastId = id;
+                    }
+                }
+
+                // 不满一页说明已经到尾部；lastId 取不到说明文档 Id 不是数字（不该发生），
+                // 两种情况下都停止，避免死循环。
+                if (hits.Length < MaxIndexedIdsProbe || lastId <= 0) break;
+
+                afterProductId = lastId;
             }
 
             return ids;
@@ -272,7 +343,7 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "读取索引商品 Id 异常");
-            return Array.Empty<long>();
+            return ids;
         }
     }
 
@@ -282,7 +353,15 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
         // 切分词器必须删了重建：ES 的 analyzer 固化在索引里，改 mapping 不会作用到存量文档
         try
         {
-            await _http.DeleteAsync(_index, ct).ConfigureAwait(false);
+            var response = await _http.DeleteAsync(_index, ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.NotFound)
+            {
+                var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                _logger.LogError(
+                    "删除商品索引 {Index} 失败：HTTP {Code} {Body}",
+                    _index, (int)response.StatusCode, body);
+                return false;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -300,7 +379,7 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
     /// 搜索只召回 Id，权威数据回库取，否则会出现「列表 99、结算 129」，
     /// 用户对价格的不信任就是这么来的，而且极难排查——两个库对不上，却不知道该信哪个。
     /// </remarks>
-    private static Dictionary<string, object?> BuildMapping()
+    private Dictionary<string, object?> BuildMapping()
         => new()
         {
             ["settings"] = new Dictionary<string, object?>
@@ -324,6 +403,7 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
                 ["properties"] = new Dictionary<string, object?>
                 {
                     ["productId"] = new Dictionary<string, object?> { ["type"] = "long" },
+                    ["platformId"] = new Dictionary<string, object?> { ["type"] = "long" },
                     ["brandId"] = new Dictionary<string, object?> { ["type"] = "long" },
                     ["categoryId"] = new Dictionary<string, object?> { ["type"] = "long" },
                     ["auditStatus"] = new Dictionary<string, object?> { ["type"] = "integer" },
@@ -339,9 +419,17 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
 
     /// <summary>构造一个 IK 分词器定义。</summary>
     /// <param name="tokenizer">分词器名称。</param>
+    /// <param name="filters">在分词之后执行的 token filter。</param>
     /// <returns>分词器定义。</returns>
-    private static Dictionary<string, object?> Analyzer(string tokenizer)
-        => new() { ["type"] = "custom", ["tokenizer"] = tokenizer };
+    private static Dictionary<string, object?> Analyzer(string tokenizer, params string[] filters)
+        => filters.Length == 0
+            ? new() { ["type"] = "custom", ["tokenizer"] = tokenizer }
+            : new()
+            {
+                ["type"] = "custom",
+                ["tokenizer"] = tokenizer,
+                ["filter"] = filters
+            };
 
     /// <summary>构造一个用 IK 分词、并以 ik_smart 查询的 text 字段。</summary>
     /// <param name="withKeyword">是否附加 keyword 子字段（用于完整名称的精确匹配）。</param>
@@ -376,6 +464,18 @@ public sealed class ElasticsearchProductSearchIndex : IProductSearchIndex
     /// <returns>可直接放进 query 的对象。</returns>
     private static object Term(string field, object value)
         => new Dictionary<string, object?> { ["term"] = new Dictionary<string, object?> { [field] = value } };
+
+    /// <summary>构造一个带权重的 multi_match 查询。</summary>
+    private static object MultiMatch(string query, double boost)
+        => new Dictionary<string, object?>
+        {
+            ["multi_match"] = new Dictionary<string, object?>
+            {
+                ["query"] = query,
+                ["fields"] = new[] { "spuName^3", "subTitle", "brandName^2", "categoryName" },
+                ["boost"] = boost
+            }
+        };
 
     /// <summary>构造一个字段排序。</summary>
     /// <param name="field">字段名。</param>

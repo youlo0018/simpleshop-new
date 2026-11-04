@@ -25,6 +25,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()

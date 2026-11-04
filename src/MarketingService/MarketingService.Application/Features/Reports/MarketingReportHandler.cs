@@ -33,6 +33,7 @@ public sealed record ActivityReportRow(
 /// <param name="ConsumedTotal">券核销数：区间内真正用掉。</param>
 /// <param name="ConsumeRate">核销率 = 核销数 / 领取数，以 0~1 小数下发。</param>
 /// <param name="DiscountTotal">券折扣总额：核销掉的券实际让利合计（两位小数）。</param>
+/// <param name="ActivitiesTruncated">活动明细是否被截断：参与活动的数量超过一次返回上限时为 true，运营不应把它当全量。</param>
 /// <remarks>
 /// <b>活动与券是并列的两段</b>（BUSINESS.md 11.1）：活动不需要领取、下单即生效；
 /// 券要先领、订单级只能一张。合成一个「优惠总额」会让运营分不清
@@ -93,17 +94,37 @@ public sealed class MarketingReportHandler
             from, to, request.MerchantId, request.PlatformId, limit: 100, ct).ConfigureAwait(false);
         var aggregates = participation.Items;
 
-        // 每个活动单独问一次订单服务，而不是把全部单号合起来问一次：
-        // 合并只能拿到一个总额，拆不回各活动，而报表要的是逐活动的「参与金额」。
-        var rows = new List<ActivityReportRow>(aggregates.Count);
+        // 🔴 把所有活动需要的订单号**合并后分批**取回逐单金额，再在内存里按活动汇总。
+        // 原实现是「每个活动问一次订单服务」——最多 100 个活动就是 100 次串行 HTTP（数秒）。
+        // 订单侧本来就回**逐单**金额（sum-payable 的 items），合并不丢信息。
+        // 分批（每批 5000）是为了不把几万个单号塞进一个请求体；
+        // 相比原来「每活动一次」，调用次数降到 ceil(去重单号 / 5000)，通常 1~2 次。
+        var neededOrderNos = new HashSet<string>(StringComparer.Ordinal);
         foreach (var agg in aggregates)
         {
-            var orderNos = agg.OrderNos.Take(MaxOrderNosForAmount).ToList();
-            var amount = await _orders.SumPayableAsync(orderNos, ct).ConfigureAwait(false);
-
-            rows.Add(new ActivityReportRow(
-                agg.ActivityId, agg.ActivityName, agg.OrderCount, amount, agg.DiscountTotal));
+            foreach (var no in agg.OrderNos.Take(MaxOrderNosForAmount)) neededOrderNos.Add(no);
         }
+
+        var amountByOrder = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        foreach (var chunk in neededOrderNos.Chunk(MaxOrderNosForAmount))
+        {
+            var part = await _orders.GetPayableByOrderAsync(chunk, ct).ConfigureAwait(false);
+            foreach (var (orderNo, amount) in part) amountByOrder[orderNo] = amount;
+        }
+
+        var rows = aggregates
+            .Select(agg =>
+            {
+                var amount = Math.Round(
+                    agg.OrderNos.Take(MaxOrderNosForAmount)
+                        .Distinct(StringComparer.Ordinal)
+                        .Sum(no => amountByOrder.GetValueOrDefault(no)),
+                    2, MidpointRounding.AwayFromZero);
+
+                return new ActivityReportRow(
+                    agg.ActivityId, agg.ActivityName, agg.OrderCount, amount, agg.DiscountTotal);
+            })
+            .ToList();
 
         var couponAgg = await _coupons.AggregateAsync(
             from, to, request.MerchantId, request.PlatformId, ct).ConfigureAwait(false);

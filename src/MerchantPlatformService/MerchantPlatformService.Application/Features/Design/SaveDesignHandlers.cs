@@ -25,6 +25,7 @@ internal static class DesignDraftSaver
 {
     /// <summary>校验并保存草稿。</summary>
     /// <param name="configJson">配置 JSON。</param>
+    /// <param name="storedJson">库里已存的 JSON（草稿优先，没有草稿时是已发布版本），用于逐页增量合并；null 表示一次全新的保存，没有任何底稿可合并。</param>
     /// <param name="forMerchant">是否按商户装修校验。</param>
     /// <param name="platformId">限定平台，0 表示不限。</param>
     /// <param name="merchantId">限定商户，0 表示不限。</param>

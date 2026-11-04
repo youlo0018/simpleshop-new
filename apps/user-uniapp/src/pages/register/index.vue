@@ -1,27 +1,26 @@
 <template>
-  <view class="register-page">
-    <view class="register-card">
-      <AppHeader title="注册账号" subtitle="注册后即可加购、下单与领券" back />
-      <view class="field">
-        <text class="field__label">登录名</text>
-        <input v-model="form.customerName" class="field__input" placeholder="3-64 位字母、数字或下划线" />
-        <text v-if="errors.customerName" class="field__error">{{ errors.customerName }}</text>
+  <view class="auth page-shell">
+    <AppHeader back title="注册" />
+    <view class="auth__head">
+      <text class="auth__title">创建 {{ platform.current?.mallName }} 账号</text>
+      <text class="auth__desc">同一手机号可在不同平台分别注册</text>
+    </view>
+    <view class="auth-form card">
+      <label v-for="field in fields" :key="field.key" class="field">
+        <text>{{ field.label }}</text>
+        <input
+          v-model="form[field.key]"
+          :password="field.password"
+          :placeholder="field.placeholder"
+          :maxlength="field.maxlength"
+        />
+      </label>
+      <view class="agreement">
+        <button class="check" :class="{ 'check--on': agreed }" @click="agreed = !agreed">{{ agreed ? '✓' : '' }}</button>
+        <text>我已同意用户协议和隐私政策</text>
       </view>
-      <view class="field">
-        <text class="field__label">手机号</text>
-        <input v-model="form.phone" class="field__input" type="number" maxlength="11" placeholder="11 位手机号" />
-        <text v-if="errors.phone" class="field__error">{{ errors.phone }}</text>
-      </view>
-      <view class="field">
-        <text class="field__label">昵称</text>
-        <input v-model="form.nickName" class="field__input" placeholder="选填" />
-      </view>
-      <view class="field">
-        <text class="field__label">密码</text>
-        <input v-model="form.password" class="field__input" password placeholder="至少 8 位，包含字母和数字" />
-        <text v-if="errors.password" class="field__error">{{ errors.password }}</text>
-      </view>
-      <button class="button-primary register-card__submit" :loading="loading" @tap="submit">注册并登录</button>
+      <button class="btn-primary" :disabled="submitting" @click="submit">注册并登录</button>
+      <button class="auth__switch" @click="goBack">已有账号？去登录</button>
     </view>
   </view>
 </template>
@@ -29,37 +28,38 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue';
 import AppHeader from '@/components/AppHeader.vue';
+import { usePlatformStore } from '@/stores/platform';
 import { useSessionStore } from '@/stores/session';
-import { isCustomerName, isPassword, isPhone } from '@/common/validators';
 
+const platform = usePlatformStore();
 const session = useSessionStore();
-const loading = ref(false);
-const form = reactive({
+const agreed = ref(false);
+const submitting = ref(false);
+const form = reactive<Record<string, string>>({
   customerName: '',
   phone: '',
+  password: '',
+  confirmPassword: '',
   nickName: '',
-  password: '',
 });
-const errors = reactive({
-  customerName: '',
-  phone: '',
-  password: '',
-});
-
-function validate() {
-  errors.customerName = isCustomerName(form.customerName.trim())
-    ? ''
-    : '登录名需为 3-64 位字母、数字或下划线';
-  errors.phone = isPhone(form.phone.trim()) ? '' : '手机号格式不正确';
-  errors.password = isPassword(form.password)
-    ? ''
-    : '密码至少 8 位且同时包含字母和数字';
-  return !errors.customerName && !errors.phone && !errors.password;
-}
+const fields = [
+  { key: 'customerName', label: '登录名', placeholder: '3-64 位登录名', password: false, maxlength: 64 },
+  { key: 'phone', label: '手机号', placeholder: '请输入手机号', password: false, maxlength: 20 },
+  { key: 'password', label: '密码', placeholder: '至少 8 位，包含字母和数字', password: true, maxlength: 64 },
+  { key: 'confirmPassword', label: '确认密码', placeholder: '请再次输入密码', password: true, maxlength: 64 },
+  { key: 'nickName', label: '昵称（选填）', placeholder: '不填则使用登录名', password: false, maxlength: 64 },
+];
 
 async function submit() {
-  if (!validate()) return;
-  loading.value = true;
+  if (!agreed.value) {
+    uni.showToast({ title: '请先同意协议', icon: 'none' });
+    return;
+  }
+  if (form.password !== form.confirmPassword) {
+    uni.showToast({ title: '两次密码不一致', icon: 'none' });
+    return;
+  }
+  submitting.value = true;
   try {
     await session.register(
       form.customerName.trim(),
@@ -68,56 +68,93 @@ async function submit() {
       form.nickName.trim() || form.customerName.trim(),
     );
     uni.showToast({ title: '注册成功', icon: 'success' });
-    setTimeout(() => uni.reLaunch({ url: '/pages/profile/index' }), 400);
+    setTimeout(() => uni.reLaunch({ url: '/pages/index/index' }), 350);
   } finally {
-    loading.value = false;
+    submitting.value = false;
   }
+}
+
+function goBack() {
+  uni.navigateBack();
 }
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.register-page {
-  min-height: 100vh;
-  padding: $space-5;
-  background: $bg-page;
+.auth__head {
+  padding: 46rpx 12rpx 30rpx;
 }
 
-.register-card {
-  padding: $space-4;
-  border-radius: 40rpx;
-  background: #fff;
-  box-shadow: 0 20rpx 60rpx rgba(0, 0, 0, 0.08);
+.auth__title {
+  display: block;
+  font-size: 42rpx;
+  font-weight: 600;
+}
+
+.auth__desc {
+  display: block;
+  margin-top: 10rpx;
+  color: $muted;
+  font-size: 24rpx;
+}
+
+.auth-form {
+  padding: 30rpx;
 }
 
 .field {
-  margin-top: $space-3;
-}
-
-.field__label {
   display: block;
-  margin-bottom: $space-1;
-  color: $text-2;
-  font-size: $font-sub;
+  margin-bottom: 22rpx;
 }
 
-.field__input {
+.field text {
+  display: block;
+  margin-bottom: 10rpx;
+  color: $muted;
+  font-size: 23rpx;
+}
+
+.field input {
   height: 88rpx;
-  padding: 0 $space-3;
-  border-radius: $radius-sm;
-  background: $bg-page;
-  font-size: $font-body;
+  padding: 0 20rpx;
+  border-radius: 12rpx;
+  background: #f5f6f8;
+  font-size: 26rpx;
 }
 
-.field__error {
-  display: block;
-  margin-top: 8rpx;
-  color: $danger;
-  font-size: $font-note;
+.agreement {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  margin: 8rpx 0 28rpx;
+  color: $muted;
+  font-size: 22rpx;
 }
 
-.register-card__submit {
-  margin-top: $space-5;
+.check {
+  width: 36rpx;
+  height: 36rpx;
+  padding: 0;
+  border: 2rpx solid #cfcfd4;
+  border-radius: 999rpx;
+  background: #fff;
+  color: #fff;
+  font-size: 20rpx;
+}
+
+.check--on {
+  border-color: $brand;
+  background: $brand;
+}
+
+.auth__switch {
+  width: 100%;
+  height: 76rpx;
+  margin-top: 18rpx;
+  border: 0;
+  background: transparent;
+  color: $muted;
+  font-size: 24rpx;
 }
 </style>

@@ -12,8 +12,11 @@ public static class DesignPages
     /// <summary>店铺页（仅商户装修可建）。</summary>
     public const string Store = "store";
 
+    /// <summary>商城页（固定页面，仅保存 Tab 配置）。</summary>
+    public const string Mall = "mall";
+
     /// <summary>平台装修可搭建的页面。</summary>
-    public static readonly string[] PlatformPages = [Index, Profile];
+    public static readonly string[] PlatformPages = [Index, Profile, Mall];
 
     /// <summary>商户装修可搭建的页面（画布锁定为店铺页）。</summary>
     public static readonly string[] MerchantPages = [Store];
@@ -67,6 +70,18 @@ public static class DesignPropKinds
 
     /// <summary>数字。</summary>
     public const string Number = "number";
+
+    /// <summary>下拉选择。</summary>
+    public const string Select = "select";
+
+    /// <summary>布尔开关。</summary>
+    public const string Switch = "switch";
+
+    /// <summary>可增删排序的对象列表。</summary>
+    public const string List = "list";
+
+    /// <summary>跳转配置。</summary>
+    public const string Jump = "jump";
 }
 
 /// <summary>一个可编辑的组件属性。</summary>
@@ -75,12 +90,20 @@ public static class DesignPropKinds
 /// <param name="Kind">控件类型，见 <see cref="DesignPropKinds"/>。</param>
 /// <param name="Placeholder">输入提示。</param>
 /// <param name="Max">多图时的张数上限，其余类型为 0。</param>
+/// <param name="ItemProps">列表型属性的子字段。</param>
+/// <param name="Options">下拉型属性的选项，格式为 value:label。</param>
 /// <remarks>
 /// 属性面板由这份 schema 驱动，不在前端按 <c>type</c> 写死分支：
 /// 写死的话，后台加了组件却忘了在属性面板补一段，运营就只能拖出一个改不了的组件。
 /// </remarks>
 public sealed record DesignPropDef(
-    string Key, string Label, string Kind, string Placeholder = "", int Max = 0);
+    string Key,
+    string Label,
+    string Kind,
+    string Placeholder = "",
+    int Max = 0,
+    IReadOnlyList<DesignPropDef>? ItemProps = null,
+    IReadOnlyList<string>? Options = null);
 
 /// <summary>一个已注册的装修组件。</summary>
 /// <param name="Type">组件类型，画布里用它标识。</param>
@@ -116,6 +139,26 @@ public static class DesignComponentRegistry
         new("subtitle", "副标题", DesignPropKinds.Text, "选填")
     ];
 
+    /// <summary>图片入口列表的通用子字段。</summary>
+    private static readonly DesignPropDef[] ImageEntryProps =
+    [
+        new("image", "图片", DesignPropKinds.Image, "建议 1:1"),
+        new("name", "文案", DesignPropKinds.Text, "如 新品推荐"),
+        new("linkType", "跳转类型", DesignPropKinds.Select, "",
+            0, null, ["none:不跳转", "product:商品", "category:分类", "activity:活动", "shop:店铺", "mall:商城页", "url:链接"]),
+        new("linkValue", "跳转参数", DesignPropKinds.Text, "目标 Id 或链接")
+    ];
+
+    /// <summary>轮播图列表子字段。</summary>
+    private static readonly DesignPropDef[] BannerItemProps =
+    [
+        new("image", "图片", DesignPropKinds.Image, "建议 2:1"),
+        new("title", "说明", DesignPropKinds.Text, "选填"),
+        new("linkType", "跳转类型", DesignPropKinds.Select, "",
+            0, null, ["none:不跳转", "product:商品", "category:分类", "activity:活动", "shop:店铺", "mall:商城页", "url:链接"]),
+        new("linkValue", "跳转参数", DesignPropKinds.Text, "目标 Id 或链接")
+    ];
+
     /// <summary>全部组件定义。</summary>
     public static readonly IReadOnlyList<DesignComponentDef> All =
     [
@@ -124,25 +167,69 @@ public static class DesignComponentRegistry
         // 少了轮播图 / 标题栏 / 分割线这些基础组件，搭建器上根本拖不出来
         new("banner", "轮播图", DesignComponentCategories.Layout, DesignPages.AllPages, true,
         [
-            new("images", "轮播图", DesignPropKinds.Images, "最多 8 张，可拖动排序", 8),
+            new("items", "轮播图", DesignPropKinds.List, "每张图可独立配置跳转", 8, BannerItemProps),
             new("title", "图片说明", DesignPropKinds.Text, "选填")
         ]),
         new("kingKong", "金刚区宫格", DesignComponentCategories.Layout, [DesignPages.Index], false,
-            TitleOnly),
+        [
+            new("title", "标题", DesignPropKinds.Text, "选填"),
+            new("items", "入口", DesignPropKinds.List, "建议 4~10 个", 12, ImageEntryProps)
+        ]),
         new("categoryNav", "分类导航", DesignComponentCategories.Layout, [DesignPages.Index], false,
-            TitleOnly),
+        [
+            new("title", "标题", DesignPropKinds.Text, "选填"),
+            new("limit", "展示数量", DesignPropKinds.Number, "默认 8"),
+            new("includeChildren", "包含下级", DesignPropKinds.Switch, "")
+        ]),
         new("productGrid", "商品双列网格", DesignComponentCategories.Layout, DesignPages.AllPages, true,
-            TitleAndSubtitle),
+        [
+            new("title", "标题", DesignPropKinds.Text, "如 精选推荐"),
+            new("columns", "列数", DesignPropKinds.Select, "", 0, null, ["2:两列", "3:三列"]),
+            new("source", "商品范围", DesignPropKinds.Select, "", 0, null,
+                ["all:全部商品", "category:指定分类", "brand:指定品牌", "manual:手动选商品"]),
+            new("categoryId", "分类 Id", DesignPropKinds.Text, "source=category 时填写"),
+            new("brandId", "品牌 Id", DesignPropKinds.Text, "source=brand 时填写"),
+            new("sortBy", "排序", DesignPropKinds.Select, "", 0, null,
+                ["0:综合", "1:销量", "2:价格升序", "3:价格降序", "4:上新"]),
+            new("limit", "商品数量", DesignPropKinds.Number, "默认 10"),
+            new("showMore", "显示查看更多", DesignPropKinds.Switch, ""),
+            new("showSelf", "显示自营标签", DesignPropKinds.Switch, "")
+        ]),
         new("productScroll", "商品横向滑动", DesignComponentCategories.Layout, [DesignPages.Index], false,
-            TitleAndSubtitle),
+        [
+            new("title", "标题", DesignPropKinds.Text, "如 为你推荐"),
+            new("source", "商品范围", DesignPropKinds.Select, "", 0, null,
+                ["all:全部商品", "category:指定分类", "brand:指定品牌", "manual:手动选商品"]),
+            new("sortBy", "排序", DesignPropKinds.Select, "", 0, null,
+                ["0:综合", "1:销量", "2:价格升序", "3:价格降序", "4:上新"]),
+            new("limit", "商品数量", DesignPropKinds.Number, "默认 10"),
+            new("showSelf", "显示自营标签", DesignPropKinds.Switch, "")
+        ]),
         new("couponZone", "优惠券专区", DesignComponentCategories.Layout, [DesignPages.Index], false,
-            TitleOnly),
+        [
+            new("title", "标题", DesignPropKinds.Text, "默认 领券中心"),
+            new("activityIds", "券活动 Id", DesignPropKinds.Text, "多个用逗号分隔，留空取全部"),
+            new("limit", "展示数量", DesignPropKinds.Number, "默认 3")
+        ]),
         new("activityZone", "活动专区", DesignComponentCategories.Layout, [DesignPages.Index], false,
-            TitleOnly),
+        [
+            new("title", "标题", DesignPropKinds.Text, "默认 限时活动"),
+            new("activityIds", "活动 Id", DesignPropKinds.Text, "多个用逗号分隔，留空取全部"),
+            new("limit", "展示数量", DesignPropKinds.Number, "默认 3"),
+            new("cardStyle", "卡片样式", DesignPropKinds.Select, "", 0, null, ["image:图片卡", "compact:紧凑卡"])
+        ]),
         new("seckillZone", "秒杀专区", DesignComponentCategories.Layout, [DesignPages.Index], false,
-            TitleOnly),
+        [
+            new("title", "标题", DesignPropKinds.Text, "默认 限时抢购"),
+            new("sessionId", "场次 Id", DesignPropKinds.Text, "留空取进行中场次"),
+            new("limit", "展示数量", DesignPropKinds.Number, "默认 3")
+        ]),
         new("shopList", "店铺列表", DesignComponentCategories.Layout, [DesignPages.Index], false,
-            TitleOnly),
+        [
+            new("title", "标题", DesignPropKinds.Text, "默认 精选店铺"),
+            new("limit", "展示数量", DesignPropKinds.Number, "默认 3"),
+            new("sort", "排序", DesignPropKinds.Select, "", 0, null, ["default:默认", "rating:评分"])
+        ]),
 
         // 内容（通用）
         new("imageText", "图文广告", DesignComponentCategories.Content, DesignPages.AllPages, true,
@@ -152,7 +239,11 @@ public static class DesignComponentRegistry
             new("image", "图片", DesignPropKinds.Image, "建议 16:9")
         ]),
         new("notice", "公告栏", DesignComponentCategories.Content, DesignPages.AllPages, true,
-            [new("text", "公告内容", DesignPropKinds.Textarea, "如 今日下单次日达")]),
+        [
+            new("text", "兜底公告", DesignPropKinds.Textarea, "平台未配置公告时显示"),
+            new("source", "公告来源", DesignPropKinds.Select, "", 0, null, ["all:按后台顺序全部轮播", "selected:指定公告"]),
+            new("noticeIds", "公告 Id", DesignPropKinds.Text, "多个用逗号分隔")
+        ]),
         new("title", "标题栏", DesignComponentCategories.Content, DesignPages.AllPages, true,
             TitleAndSubtitle),
         new("divider", "分割线", DesignComponentCategories.Content, DesignPages.AllPages, true, []),

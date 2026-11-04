@@ -1,4 +1,5 @@
 using Collaboration.Domain.Common;
+using Collaboration.Domain.Context;
 using MediatR;
 using MarketingService.Domain.Entities;
 using MarketingService.Domain.IRepository;
@@ -31,9 +32,13 @@ public sealed class QueryGrabResultHandler
     public async Task<ApiResponse<GrabResultDto>> Handle(
         QueryGrabResultCommand request, CancellationToken ct)
     {
+        // 防 IDOR：请求体里的 CustomerId 不能直接采信，否则知道 requestId 的人
+        // 只要填上受害人的客户 Id 就能读到对方的订单号。
+        var customerId = CustomerScope.Require(request.CustomerId);
+
         var grab = await _seckill.GetGrabByRequestIdAsync(request.RequestId, ct).ConfigureAwait(false);
 
-        if (grab is null || grab.CustomerId != request.CustomerId)
+        if (grab is null || grab.CustomerId != customerId)
         {
             return ApiResults.Fail<GrabResultDto>(BaseApiResponseCode.NotFound, "抢购记录不存在");
         }

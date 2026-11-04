@@ -79,6 +79,7 @@ public sealed class ShopItemAssembler
 
             items.Add(new ShopProductItem(
                 row.Id.ToString(),
+                row.MerchantId.ToString(),
                 row.SpuName,
                 row.SubTitle,
                 row.MainImage,

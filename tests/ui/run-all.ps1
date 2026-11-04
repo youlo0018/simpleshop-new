@@ -1,17 +1,16 @@
 <#
 .SYNOPSIS
-    跑全部前端回归：静态核对 → 后台页面巡检 → 后台深度回归 → 小程序巡检。
+    跑全部前端回归：静态核对 → 后台页面巡检 → 后台深度回归。
 
 .DESCRIPTION
     顺序不是随意的：
       ① `check-route-links.mjs` 是静态的（秒级），先跑 —— 链接指向不存在的路由时，
          后面的界面回归只会看到「点了没反应 / 回到工作台」，很难定位；
       ② `admin-ui-regression.mjs` 覆盖 31 个菜单页 + 27 个非菜单页 + 10 条流程；
-      ③ `admin-deep-regression.mjs` 覆盖页内控件（页签 / 筛选 / 分页 / 行操作 / 表单 / 树 / 装修…）；
-      ④ `user-ui-regression.mjs` 覆盖小程序 22 页。
+      ③ `admin-deep-regression.mjs` 覆盖页内控件（页签 / 筛选 / 分页 / 行操作 / 表单 / 树 / 装修…）。
 
     每个脚本的「通过 / 失败 / 退出码」收成一行，最后统一给退出码。
-    需要先起服务与两个前端预览（scripts/start-services.ps1 + scripts/start-web.ps1）。
+    需要先起服务与后台预览（scripts/start-services.ps1 + 后台构建产物）。
 #>
 [CmdletBinding()]
 param(
@@ -24,8 +23,7 @@ $root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $steps = @(
     @{ Name = 'check-route-links'; Cmd = 'node'; Args = @('tests/ui/check-route-links.mjs') },
     @{ Name = 'admin-ui-regression'; Cmd = 'node'; Args = @('tests/ui/admin-ui-regression.mjs') },
-    @{ Name = 'admin-deep-regression'; Cmd = 'node'; Args = @('tests/ui/admin-deep-regression.mjs') },
-    @{ Name = 'user-ui-regression'; Cmd = 'node'; Args = @('tests/ui/user-ui-regression.mjs') }
+    @{ Name = 'admin-deep-regression'; Cmd = 'node'; Args = @('tests/ui/admin-deep-regression.mjs') }
 )
 
 if ($Filter) { $steps = $steps | Where-Object { $_.Name -like "*$Filter*" } }

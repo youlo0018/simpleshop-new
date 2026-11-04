@@ -1,98 +1,134 @@
 @use './tokens.scss' as *;
 
-view,
-text,
-image,
-scroll-view,
-button,
-input,
-textarea {
+page {
+  --brand: #0071e3;
+  --tab-color: #0071e3;
+  --page-bg: #f5f6f8;
+  --page-gutter: 24rpx;
+  --page-gutter-negative: -24rpx;
+  min-height: 100%;
+  background: $bg;
+  color: $text;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+view, text, image, scroll-view, button, input, textarea {
   box-sizing: border-box;
 }
 
-page {
-  min-height: 100%;
-  background: $bg-page;
-  color: $text-1;
-  font-size: $font-body;
+button::after {
+  border: 0;
 }
 
-.page {
+.page-shell {
   min-height: 100vh;
-  padding: 0 $space-3 calc(env(safe-area-inset-bottom) + 40rpx);
+  padding: 0 var(--page-gutter) calc(140rpx + env(safe-area-inset-bottom));
 }
 
-.panel {
-  background: $bg-card;
-  border-radius: $radius-lg;
-  box-shadow: $shadow-card;
+.card {
+  background: $card;
+  border: 1rpx solid rgba(17, 24, 39, 0.035);
+  border-radius: $radius-card;
+  box-shadow: $shadow;
 }
 
-.section-title {
+.section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: $space-5 0 $space-3;
-  font-size: $font-heading;
+  min-height: 72rpx;
+  padding: 20rpx 4rpx 16rpx;
+  gap: 20rpx;
+}
+
+.section-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 34rpx;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.section-more {
+  flex: 0 0 auto;
+  margin: 0;
+  color: $muted;
+  font-size: 24rpx;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.section-more--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 48rpx;
+  flex: 0 0 auto;
+  gap: 2rpx;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: $muted;
+  font-size: 23rpx;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.price {
+  color: $price;
   font-weight: 600;
 }
 
 .muted {
-  color: $text-2;
+  color: $muted;
 }
 
-.amount {
-  color: $brand;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.button-primary {
+.btn-primary {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 88rpx;
-  border-radius: 44rpx;
+  border-radius: 999rpx;
   background: $brand;
   color: #fff;
-  font-size: $font-body;
+  font-size: 30rpx;
   font-weight: 500;
+  box-shadow: 0 10rpx 26rpx rgba(0, 113, 227, 0.18);
 }
 
-.button-primary::after {
-  border: none;
-}
-
-.button-primary[disabled] {
-  opacity: 0.45;
-}
-
-.button-mini {
-  display: inline-flex;
+.btn-ghost {
+  display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 128rpx;
-  height: 60rpx;
-  padding: 0 $space-3;
-  border-radius: 30rpx;
-  background: $brand;
-  color: #fff;
-  font-size: $font-note;
-  line-height: 60rpx;
+  height: 72rpx;
+  padding: 0 28rpx;
+  border: 1rpx solid $line;
+  border-radius: 999rpx;
+  color: $text;
+  background: #fff;
+  font-size: 26rpx;
 }
 
-.button-mini::after {
-  border: none;
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
-.empty {
-  padding: 120rpx 0;
-  text-align: center;
-  color: $text-2;
+button {
+  margin: 0;
+  transition: opacity 150ms cubic-bezier(0.4, 0, 0.2, 1),
+    transform 150ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.loading {
-  padding: 80rpx 0;
-  text-align: center;
-  color: $text-3;
+button:active:not([disabled]) {
+  opacity: 0.76;
+  transform: scale(0.985);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

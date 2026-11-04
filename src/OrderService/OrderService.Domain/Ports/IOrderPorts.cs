@@ -275,7 +275,11 @@ public interface IPointPort
 
     /// <summary>退款按比例回收该单已扣积分（向上取整，退回原冻结批次）。</summary>
     /// <param name="customerId">客户 Id。</param>
-    /// <param name="orderNo">订单号，幂等键的一部分。</param>
+    /// <param name="orderNo">订单号，用于定位冻结批次并累计同一订单的回收。</param>
+    /// <param name="refundNo">
+    /// 退款单号。同一订单的多次部分退款靠它各自幂等：
+    /// 只用订单号做幂等键会把第二次之后的退款当成重复请求丢掉，该收的积分收不回。
+    /// </param>
     /// <param name="refundRatio">退款比例 0~1，整单退款传 1，部分退款传本次退款额 ÷ 实付。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>异步任务。</returns>
@@ -286,7 +290,7 @@ public interface IPointPort
     /// 比例由调用方算好：只有退款方知道退了多少，积分服务不认订单金额。
     /// </remarks>
     Task RecoverByRefundAsync(
-        long customerId, string orderNo, decimal refundRatio, CancellationToken ct = default);
+        long customerId, string orderNo, string refundNo, decimal refundRatio, CancellationToken ct = default);
 
 }
 
@@ -378,6 +382,23 @@ public interface IOrderStore
     /// <param name="ct">取消令牌。</param>
     /// <returns>订单或 null。</returns>
     Task<Order?> FindByOrderNoAsync(string orderNo, CancellationToken ct = default);
+
+    /// <summary>取「实付 0 元但占用还没结清」的订单（补偿任务用）。</summary>
+    /// <param name="limit">最多取多少张。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>按下单时间从早到晚排列的待结清订单。</returns>
+    /// <remarks>
+    /// 实付 0 元的单没有支付回调，创建后当场结清占用；结清失败时订单已落库、
+    /// 用户看到的是「待发货」，只能靠这个查询把它们捞出来重放。
+    /// 条件里带 <c>status = 20</c>：取消 / 退款的单不该再结清。
+    /// </remarks>
+    Task<List<Order>> ListPendingZeroPaySettlementsAsync(int limit, CancellationToken ct = default);
+
+    /// <summary>标记实付 0 元订单的占用已结清。</summary>
+    /// <param name="orderId">订单 Id。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>受影响行数。</returns>
+    Task<int> MarkSettledAsync(long orderId, CancellationToken ct = default);
 
     /// <summary>按 Id 取订单（后台详情用）。</summary>
     /// <param name="orderId">订单 Id。</param>
@@ -573,6 +594,26 @@ public interface IOrderStore
         long orderId, int fromStatus, decimal amount, bool fullyRefunded,
         CancellationToken ct = default);
 
+    /// <summary>把退款台账与订单退款余额写进<b>同一个事务</b>：余额不足时台账一起回滚。</summary>
+    /// <param name="orderId">订单 Id。</param>
+    /// <param name="fromStatus">期望的原状态。</param>
+    /// <param name="amount">本次退款金额。</param>
+    /// <param name="fullyRefunded">退完后是否剩余可退余额为 0。</param>
+    /// <param name="refund">退款记录主表。</param>
+    /// <param name="items">退款明细。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>true 表示余额扣减与台账写入都成功；false 表示余额不足 / 状态已变，什么都没写。</returns>
+    /// <remarks>
+    /// <para><b>为什么必须合成一个方法</b>：原来两条退款路径都是「先写台账，再用带余额条件的
+    /// UPDATE 改订单」，并发下 UPDATE 命中 0 行时台账已经落库 —— 留下一条金额从未生效的
+    /// 「幽灵退款记录」，行级可退余额被它污染，之后对账与再次退款全跟着错。</para>
+    /// <para>顺序也不能反过来（先 UPDATE 再写台账）：台账写失败时订单余额已扣，
+    /// 而「还能退多少」靠台账算。只有放进一个事务，两个动作才真正同生共死。</para>
+    /// </remarks>
+    Task<bool> ApplyRefundWithLedgerAsync(
+        long orderId, int fromStatus, decimal amount, bool fullyRefunded,
+        OrderRefund refund, IReadOnlyCollection<OrderRefundItem> items, CancellationToken ct = default);
+
     /// <summary>按订单 Id 取全部退款记录与明细（后台订单详情用）。</summary>
     /// <param name="orderId">订单 Id。</param>
     /// <param name="ct">取消令牌。</param>
@@ -638,6 +679,7 @@ public interface IOrderStore
 /// <param name="HasPhysical">是否含实物快递行，列表页据此显示「发货」按钮。</param>
 /// <param name="HasVirtual">是否含虚拟商品行，含虚拟行时整单不可退款。</param>
 /// <param name="HasSelfPickup">是否含自提行，列表页据此显示「核销」按钮。</param>
+/// <param name="SkuIds">订单行涉及的前 3 个 SKU Id，用于批量取商品主图。</param>
 public readonly record struct OrderItemAggregate(
     long OrderId,
     int ItemQuantity,
@@ -645,7 +687,8 @@ public readonly record struct OrderItemAggregate(
     string FirstProductName,
     bool HasPhysical,
     bool HasVirtual,
-    bool HasSelfPickup);
+    bool HasSelfPickup,
+    IReadOnlyList<long> SkuIds);
 
 /// <summary>订单行已退余额。</summary>
 /// <param name="OrderItemId">订单行 Id。</param>

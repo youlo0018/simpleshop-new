@@ -117,6 +117,13 @@ public sealed class SearchIndexSyncHandler
             }
         }
 
+        // 批量补写一直用 refresh=false，避免每条商品都触发一次索引刷新。
+        // 整轮结束后统一刷新一次，保证运营刚点完保存就能搜到新配置的结果。
+        if (!await _search.RefreshAsync(ct).ConfigureAwait(false))
+        {
+            _logger.LogWarning("商品索引已补写，但强制刷新失败；新文档会等待 ES 下一次自动刷新");
+        }
+
         var result = new SearchIndexSyncResult(
             dbTotal, indexedBefore, dbTotal, missing, orphans, failed);
 

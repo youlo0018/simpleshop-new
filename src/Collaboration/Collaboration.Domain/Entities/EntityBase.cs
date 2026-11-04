@@ -17,7 +17,8 @@ public abstract class EntityBase
     /// </summary>
     /// <remarks>
     /// 非数据库自增，由 FreeSql AOP 在 InsertBefore 注入（DATA_SPEC 3.3）。
-    /// 全局 JSON 配置 WriteAsString，前端收到的是字符串，禁止 Number() 转换。
+    /// 跨端下发时由 DTO 把 Id 字段声明成 <c>string</c>（雪花 Id 超过 JS 安全整数会丢精度），
+    /// 前端保持原样、禁止 Number() 转换；Handler 内仍用 <c>long</c> 比较。
     /// </remarks>
     [Column(IsPrimary = true, IsIdentity = false, Name = "id")]
     public long Id { get; set; }

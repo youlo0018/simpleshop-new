@@ -36,6 +36,24 @@ const toLocalInput = (v: unknown) => {
 
 const PHONE_PATTERN = '^1[3-9]\\d{9}$';
 
+// 金额最多两位小数（后端的金额舍入口径：PromotionCalculator.Round2 / CouponTemplateRules）。
+// 用 pattern 而不是 min/max：Number('1.005') 与字符串长度都对不齐，正则最直白。
+const AMOUNT_PATTERN = '^\\d+(\\.\\d{1,2})?$';
+const AMOUNT_MESSAGE = '金额最多两位小数';
+
+// 十六进制颜色 #RRGGBB（与 MerchantRules.ColorPattern 一致）。空值表示用默认色，直接放过。
+const COLOR_PATTERN = '^#[0-9a-fA-F]{6}$';
+const COLOR_MESSAGE = '颜色格式应为 #RRGGBB';
+
+// 字段默认值的约定（FormView 按它渲染与提交）：
+//   - 数字输入框**不写 default**：预填 0 / 10 / 1 看起来像「已经填好了」，
+//     而门槛 0（无门槛）、折扣率 10（不打折）这类值一旦被当成真实输入，
+//     用户不检查就保存，语义就错了。留空的数字字段在提交时被省略，
+//     由命令里的默认值兜底（0 / 1），必填的由 required 校验拦下。
+//   - 有 options 的数据源下拉**不写 default**：0 不是「空」，而是
+//     「平台超管（不归属具体平台）」这类真实取值，预填会让人以为已经选好了。
+//   - static 枚举（状态 / 活动类型）与 disabled 的固定值保留 default：
+//     它们本来就有确定的初始选择，空着反而异常。
 export const FORMS = {
   user: {
     title: '新建账号',
@@ -48,9 +66,12 @@ export const FORMS = {
     listSource: { url: '/gateway/users/List', method: 'GET' },
     listRoute: '/users',
     fields: [
-      { field: 'userName', label: '登录名', required: true, pattern: '^[A-Za-z0-9_]{3,32}$', patternMessage: '登录名为 3-32 位字母、数字或下划线', readonlyInEdit: true, help: '创建后不可修改' },
-      { field: 'password', label: '密码', required: true, secret: true, pattern: '^.{8,32}$', patternMessage: '密码长度 8-32 位' },
-      { field: 'nickName', label: '昵称', required: true, pattern: '^.{2,32}$', patternMessage: '昵称 2-32 个字符' },
+      // 长度与后端的 Length(3, 64) / IsWeakPassword 对齐：
+      // 密码必须是「至少 8 位且同时含字母与数字」，只写 {8,32} 会放过纯数字密码，
+      // 而后端照样 400 —— 前端放过的输入后端拒绝，是最让人困惑的一种不一致。
+      { field: 'userName', label: '登录名', required: true, pattern: '^[A-Za-z0-9_]{3,64}$', patternMessage: '登录名为 3-64 位字母、数字或下划线', readonlyInEdit: true, help: '创建后不可修改' },
+      { field: 'password', label: '密码', required: true, secret: true, pattern: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$', patternMessage: '密码至少 8 位，且必须同时包含字母和数字' },
+      { field: 'nickName', label: '昵称', required: true, pattern: '^.{1,64}$', patternMessage: '昵称 1-64 个字符' },
       { field: 'phone', label: '手机号', required: true, pattern: PHONE_PATTERN, patternMessage: '请填写正确的 11 位手机号' },
       { field: 'email', label: '邮箱', pattern: '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$', patternMessage: '邮箱格式不正确' },
       { field: 'tenantType', label: '租户类型', type: 'select', required: true, default: 1, static: [{ value: 1, label: '平台账号' }, { value: 2, label: '商户账号' }], readonlyInEdit: true },
@@ -72,7 +93,8 @@ export const FORMS = {
         default: '',
         showWhen: (m: any) => Number(m.tenantType) === 2,
       },
-      { field: 'roleIds', label: '角色', type: 'select', options: 'roles', multiple: true, filterable: true },
+      // 后端要求「至少 1 个角色」（不选等于建了一个登录后什么都做不了的账号）
+      { field: 'roleIds', label: '角色', type: 'select', options: 'roles', multiple: true, filterable: true, required: true },
     ],
   },
 
@@ -113,7 +135,7 @@ export const FORMS = {
           { value: 2, label: '本级及下级数据' },
         ],
       },
-      { field: 'remark', label: '备注', type: 'textarea', rows: 3, help: '写清这个角色给哪类岗位使用，减少后续误绑' },
+      { field: 'remark', label: '备注', type: 'textarea', rows: 3, maxLength: 512, help: '写清这个角色给哪类岗位使用，减少后续误绑' },
     ],
   },
 
@@ -149,7 +171,11 @@ export const FORMS = {
         label: '门槛金额',
         type: 'number',
         min: 0,
-        default: 0,
+        // 满减必须设门槛（后端 CouponTemplateRules 的 When(FullReduction) 要求 > 0）；
+        // 满赠沿用「0 = 无门槛」，所以这里只在满减时必填。
+        required: (m: any) => Number(m.couponType) === 1,
+        pattern: AMOUNT_PATTERN,
+        patternMessage: AMOUNT_MESSAGE,
         showWhen: (m: any) => Number(m.couponType) === 1 || Number(m.couponType) === 4,
         help: '0 表示无门槛，按适用商品行金额合计判定',
       },
@@ -158,7 +184,9 @@ export const FORMS = {
         label: '优惠金额',
         type: 'number',
         min: 0,
-        default: 0,
+        required: (m: any) => Number(m.couponType) === 1,
+        pattern: AMOUNT_PATTERN,
+        patternMessage: AMOUNT_MESSAGE,
         showWhen: (m: any) => Number(m.couponType) === 1 || Number(m.couponType) === 3,
         help: '满减券与代金券使用；金额保留两位小数',
       },
@@ -168,7 +196,9 @@ export const FORMS = {
         type: 'number',
         min: 0.01,
         max: 10,
-        default: 10,
+        required: true,
+        pattern: AMOUNT_PATTERN,
+        patternMessage: AMOUNT_MESSAGE,
         showWhen: (m: any) => Number(m.couponType) === 2,
         help: '10 表示不打折，8.5 表示 85 折',
       },
@@ -177,20 +207,20 @@ export const FORMS = {
         label: '赠送券模板',
         type: 'select',
         options: 'couponTemplates',
-        default: 0,
+        required: true,
         showWhen: (m: any) => Number(m.couponType) === 4,
         help: '满赠券生效时赠送的券模板',
       },
-      { field: 'validDays', label: '领取后有效天数', type: 'number', required: true, min: 1, max: 3650, default: 30 },
-      { field: 'totalQuantity', label: '总发行量', type: 'number', min: 0, default: 0, help: '0 表示不限量' },
-      { field: 'perUserLimit', label: '每人限领', type: 'number', min: 1, max: 100, default: 1 },
+      { field: 'validDays', label: '领取后有效天数', type: 'number', required: true, min: 1, max: 3650 },
+      { field: 'totalQuantity', label: '总发行量', type: 'number', min: 0, help: '0 表示不限量' },
+      { field: 'perUserLimit', label: '每人限领', type: 'number', min: 1, max: 100 },
     // 固定 1，不给改：订单一次只能使用一张券（BUSINESS.md 12.1），
     // 底层按订单号唯一占用天然保证。做成可编辑只会让人以为配大了能多减几张。
     { field: 'perOrderLimit', label: '每单限用', type: 'number', min: 1, max: 1, default: 1, readonlyInEdit: true, disabled: true, help: '固定 1 张，一笔订单只能用一张券' },
-      { field: 'sortOrder', label: '排序', type: 'number', min: 0, default: 0, help: '数字越小越靠前' },
+      { field: 'sortOrder', label: '排序', type: 'number', min: 0, help: '数字越小越靠前' },
       // 归属平台创建后不可改：券模板一旦发出去，改平台等于把别人的券挪到另一个平台，
       // 而编辑接口本来就把它排除在更新列之外。做成可编辑的旋钮只会让人以为改生效了。
-      { field: 'platformId', label: '归属平台', type: 'select', options: 'platforms', default: 0, readonlyInEdit: true, help: '券模板归属的平台；列表可按平台筛选，创建后不可改' },
+      { field: 'platformId', label: '归属平台', type: 'select', options: 'platforms', required: true, readonlyInEdit: true, help: '券模板归属的平台；列表可按平台筛选，创建后不可改' },
       { field: 'status', label: '状态', type: 'select', required: true, default: 1, static: [{ value: 1, label: '启用' }, { value: 2, label: '停用' }] },
     ],
   },
@@ -209,9 +239,9 @@ export const FORMS = {
       { field: 'activityName', label: '活动名', required: true, pattern: '^.{2,128}$', patternMessage: '活动名 2-128 个字符' },
       { field: 'templateId', label: '券模板', type: 'select', options: 'couponTemplates', required: true },
       { field: 'claimStartTime', label: '领取开始时间', type: 'datetime', required: true, toApi: toUtcIso, format: toLocalInput },
-      { field: 'claimEndTime', label: '领取结束时间', type: 'datetime', required: true, toApi: toUtcIso, format: toLocalInput },
-      { field: 'claimQuantity', label: '本次发放量', type: 'number', required: true, min: 1, default: 1 },
-      { field: 'perUserLimit', label: '每人限领', type: 'number', min: 1, default: 1 },
+      { field: 'claimEndTime', label: '领取结束时间', type: 'datetime', required: true, afterField: 'claimStartTime', toApi: toUtcIso, format: toLocalInput },
+      { field: 'claimQuantity', label: '本次发放量', type: 'number', required: true, min: 1 },
+      { field: 'perUserLimit', label: '每人限领', type: 'number', min: 1, max: 100 },
       {
         field: 'targetType',
         label: '适用范围',
@@ -230,10 +260,11 @@ export const FORMS = {
         type: 'textarea',
         rows: 4,
         default: '[]',
+        maxLength: 2000,
         showWhen: (m: any) => Number(m.targetType) !== 1,
         help: 'JSON 数组字符串，例如 ["123","456"]；最多 200 个',
       },
-      { field: 'sortOrder', label: '排序', type: 'number', min: 0, default: 0 },
+      { field: 'sortOrder', label: '排序', type: 'number', min: 0 },
       { field: 'status', label: '状态', type: 'select', required: true, default: 1, static: [{ value: 1, label: '启用' }, { value: 2, label: '停用' }] },
     ],
   },
@@ -247,20 +278,28 @@ export const FORMS = {
     listSource: { url: '/gateway/platforms/List', method: 'POST' },
     listRoute: '/platforms',
     fields: [
-      { field: 'platformName', label: '平台名称', required: true, pattern: '^.{2,128}$', patternMessage: '平台名称 2-128 个字符' },
+      { field: 'platformName', label: '平台名称', required: true, pattern: '^.{2,64}$', patternMessage: '平台名称 2-64 个字符' },
       { field: 'platformCode', label: '平台编码', required: true, pattern: '^[A-Za-z]{6}$', patternMessage: '平台编码为 6 位字母', readonlyInEdit: true, help: '6 位字母，创建后不可修改' },
-      { field: 'mallName', label: '商城名称', required: true, pattern: '^.{2,128}$', patternMessage: '商城名称 2-128 个字符' },
+      { field: 'mallName', label: '商城名称', required: true, pattern: '^.{2,64}$', patternMessage: '商城名称 2-64 个字符' },
       { field: 'contactName', label: '联系人', required: true, pattern: '^.{2,32}$', patternMessage: '联系人 2-32 个字符' },
       { field: 'contactPhone', label: '联系电话', required: true, pattern: PHONE_PATTERN, patternMessage: '请填写正确的 11 位手机号' },
-      { field: 'logo', label: '平台 Logo', help: '图片 URL，可先留空' },
-      { field: 'notice', label: '首页公告', type: 'textarea', rows: 3 },
-      { field: 'primaryColor', label: '主题色', type: 'color', default: '#0071e3' },
-      { field: 'tabColor', label: 'TabBar 选中色', type: 'color', default: '#0071e3' },
-      { field: 'backgroundColor', label: '页面背景色', type: 'color', default: '#f5f5f7' },
-      { field: 'shippingFee', label: '运费', type: 'number', min: 0, default: 0, help: '仅实物快递收取，两位小数' },
-      { field: 'freeShippingThreshold', label: '包邮门槛', type: 'number', min: 0, default: 0, help: '0 表示不启用包邮' },
+      { field: 'logo', label: '平台 Logo', maxLength: 512, help: '图片 URL，可先留空' },
+      { field: 'notice', label: '首页公告', type: 'textarea', rows: 3, maxLength: 500 },
+      { field: 'mallIntro', label: '商城简介', type: 'textarea', rows: 3, maxLength: 1000, help: '小程序「关于我们」展示' },
+      { field: 'shareTitle', label: '分享标题', maxLength: 128, help: '小程序转发卡片标题' },
+      { field: 'shareImage', label: '分享图', maxLength: 512, help: '图片 URL，建议 5:4' },
+      { field: 'serviceWechat', label: '客服微信', maxLength: 64 },
+      { field: 'servicePhone', label: '客服电话', maxLength: 20 },
+      { field: 'icpNo', label: 'ICP 备案号', maxLength: 64, help: '小程序「关于我们」展示' },
+      { field: 'userAgreement', label: '用户协议', type: 'textarea', rows: 6, maxLength: 20000, help: '小程序独立页展示，登录 / 注册前需勾选同意' },
+      { field: 'privacyPolicy', label: '隐私政策', type: 'textarea', rows: 6, maxLength: 20000, help: '小程序独立页展示，登录 / 注册前需勾选同意' },
+      { field: 'primaryColor', label: '主题色', type: 'color', default: '#0071e3', pattern: COLOR_PATTERN, patternMessage: COLOR_MESSAGE },
+      { field: 'tabColor', label: 'TabBar 选中色', type: 'color', default: '#0071e3', pattern: COLOR_PATTERN, patternMessage: COLOR_MESSAGE },
+      { field: 'backgroundColor', label: '页面背景色', type: 'color', default: '#f5f5f7', pattern: COLOR_PATTERN, patternMessage: COLOR_MESSAGE },
+      { field: 'shippingFee', label: '运费', type: 'number', min: 0, help: '仅实物快递收取，两位小数' },
+      { field: 'freeShippingThreshold', label: '包邮门槛', type: 'number', min: 0, help: '0 表示不启用包邮' },
       { field: 'status', label: '状态', type: 'select', required: true, default: 1, static: [{ value: 1, label: '启用' }, { value: 2, label: '停用' }] },
-      { field: 'remark', label: '备注', type: 'textarea', rows: 2 },
+      { field: 'remark', label: '备注', type: 'textarea', rows: 2, maxLength: 512 },
     ],
   },
 
@@ -277,10 +316,60 @@ export const FORMS = {
       { field: 'platformId', label: '所属平台', type: 'select', options: 'platforms', required: true, readonlyInEdit: true, help: '创建后不可改' },
       { field: 'contactName', label: '联系人', required: true, pattern: '^.{2,32}$', patternMessage: '联系人 2-32 个字符' },
       { field: 'contactPhone', label: '联系电话', required: true, pattern: PHONE_PATTERN, patternMessage: '请填写正确的 11 位手机号' },
-      { field: 'logo', label: '店铺 Logo' },
-      { field: 'description', label: '店铺简介', type: 'textarea', rows: 3 },
+      { field: 'logo', label: '店铺 Logo', maxLength: 512 },
+      { field: 'description', label: '店铺简介', type: 'textarea', rows: 3, maxLength: 1000 },
+      { field: 'serviceGuarantee', label: '服务保障', type: 'textarea', rows: 3, maxLength: 1000, help: '小程序商品详情页展示，如「正品保证 / 七天无理由」' },
+      { field: 'deliveryNote', label: '配送说明', type: 'textarea', rows: 3, maxLength: 1000, help: '小程序商品详情页展示' },
       { field: 'status', label: '状态', type: 'select', required: true, default: 2, static: [{ value: 1, label: '启用' }, { value: 2, label: '停用' }] },
-      { field: 'remark', label: '备注', type: 'textarea', rows: 2 },
+      { field: 'remark', label: '备注', type: 'textarea', rows: 2, maxLength: 512 },
+    ],
+  },
+
+  notice: {
+    title: '新建公告',
+    desc: '小程序首页多条公告轮播；平台账号自动锁定本平台',
+    createEndpoint: '/gateway/platforms/notices/Create',
+    updateEndpoint: '/gateway/platforms/notices/Update',
+    idField: 'noticeId',
+    listSource: { url: '/gateway/platforms/notices/List', method: 'POST' },
+    listRoute: '/notices',
+    fields: [
+      { field: 'platformId', label: '所属平台', type: 'select', options: 'platforms', help: '平台账号自动锁定本平台；超管需选择' },
+      { field: 'title', label: '标题', required: true, pattern: '^.{1,128}$', patternMessage: '标题 1-128 个字符' },
+      { field: 'content', label: '公告内容', type: 'textarea', rows: 4, maxLength: 1000, required: true },
+      {
+        field: 'linkType',
+        label: '跳转类型',
+        type: 'select',
+        required: true,
+        default: 'none',
+        static: [
+          { value: 'none', label: '不跳转' },
+          { value: 'product', label: '商品详情' },
+          { value: 'category', label: '分类商品' },
+          { value: 'activity', label: '活动商品' },
+          { value: 'url', label: '外部链接' },
+        ],
+      },
+      { field: 'linkParam', label: '跳转参数', maxLength: 256, help: '商品 / 分类 / 活动 Id，或外部链接' },
+      { field: 'sortOrder', label: '排序', type: 'number', min: 0, help: '小的在前' },
+      { field: 'status', label: '状态', type: 'select', required: true, default: 1, static: [{ value: 1, label: '启用' }, { value: 2, label: '停用' }] },
+    ],
+  },
+
+  hotKeyword: {
+    title: '新建热搜词',
+    desc: '小程序搜索页展示；平台账号自动锁定本平台',
+    createEndpoint: '/gateway/search/hot-keywords/Create',
+    updateEndpoint: '/gateway/search/hot-keywords/Update',
+    idField: 'keywordId',
+    listSource: { url: '/gateway/search/hot-keywords/List', method: 'POST' },
+    listRoute: '/search-hotwords',
+    fields: [
+      { field: 'platformId', label: '所属平台', type: 'select', options: 'platforms', help: '平台账号自动锁定本平台；超管需选择' },
+      { field: 'keyword', label: '关键词', required: true, pattern: '^.{1,64}$', patternMessage: '关键词 1-64 个字符' },
+      { field: 'sortOrder', label: '排序', type: 'number', min: 0, help: '小的在前' },
+      { field: 'status', label: '状态', type: 'select', required: true, default: 1, static: [{ value: 1, label: '启用' }, { value: 2, label: '停用' }] },
     ],
   },
 
@@ -299,18 +388,23 @@ export const FORMS = {
     carry: ['targetType', 'targets'],
     fields: [
       { field: 'activityName', label: '活动名', required: true, pattern: '^.{2,128}$', patternMessage: '活动名 2-128 个字符' },
+      { field: 'coverImage', label: '活动主图', maxLength: 512, help: '图片 URL，小程序活动卡片展示' },
+      { field: 'description', label: '活动说明', type: 'textarea', rows: 3, maxLength: 1000, help: '小程序活动商品列表页头部展示' },
       { field: 'activityType', label: '活动类型', type: 'select', required: true, default: 1, static: [{ value: 1, label: '满减' }, { value: 2, label: '满折' }, { value: 3, label: '满赠' }] },
-      { field: 'thresholdAmount', label: '门槛金额', type: 'number', min: 0, default: 0, help: '按适用行金额合计判定，0 表示无门槛' },
-      { field: 'discountAmount', label: '优惠金额', type: 'number', min: 0, default: 0, help: '满减用' },
-      { field: 'discountRate', label: '折扣率', type: 'number', min: 0, max: 10, default: 10, help: '满折用。10 表示不打折，8.5 表示 85 折' },
-      { field: 'giftTemplateId', label: '赠送券模板', type: 'select', options: 'couponTemplates', default: 0, help: '满赠时必填' },
-      { field: 'giftQuantity', label: '赠送张数', type: 'number', min: 1, max: 100, default: 1, help: '满赠每单赠送张数，1 ~ 100' },
+      { field: 'thresholdAmount', label: '门槛金额', type: 'number', min: 0, pattern: AMOUNT_PATTERN, patternMessage: AMOUNT_MESSAGE, help: '按适用行金额合计判定，0 表示无门槛' },
+      // 必填随活动类型变化，与后端 PromotionActivityRules 的 When(...) 一一对应：
+      // 满减要优惠金额、满折要折扣率、满赠要券模板与张数。前端先拦，
+      // 用户当场看到红框与原因，而不是提交后拿一句服务端错误。
+      { field: 'discountAmount', label: '优惠金额', type: 'number', min: 0, pattern: AMOUNT_PATTERN, patternMessage: AMOUNT_MESSAGE, required: (m: any) => Number(m.activityType) === 1, help: '满减用' },
+      { field: 'discountRate', label: '折扣率', type: 'number', min: 0, max: 10, pattern: AMOUNT_PATTERN, patternMessage: AMOUNT_MESSAGE, required: (m: any) => Number(m.activityType) === 2, help: '满折用。10 表示不打折，8.5 表示 85 折' },
+      { field: 'giftTemplateId', label: '赠送券模板', type: 'select', options: 'couponTemplates', required: (m: any) => Number(m.activityType) === 3, help: '满赠时必填' },
+      { field: 'giftQuantity', label: '赠送张数', type: 'number', min: 1, max: 100, required: (m: any) => Number(m.activityType) === 3, help: '满赠每单赠送张数，1 ~ 100' },
       { field: 'startTime', label: '开始时间', type: 'datetime', required: true, toApi: toUtcIso, format: toLocalInput },
-      { field: 'endTime', label: '结束时间', type: 'datetime', required: true, toApi: toUtcIso, format: toLocalInput },
+      { field: 'endTime', label: '结束时间', type: 'datetime', required: true, afterField: 'startTime', toApi: toUtcIso, format: toLocalInput },
       // 归属创建后锁定：更新接口根本不接收 PlatformId，
       // 做成可编辑的下拉只会让人以为改生效了。
-      { field: 'platformId', label: '归属平台', type: 'select', options: 'platforms', default: 0, readonlyInEdit: true, help: '归属平台创建后不可修改' },
-      { field: 'sortOrder', label: '排序', type: 'number', min: 0, default: 0 },
+      { field: 'platformId', label: '归属平台', type: 'select', options: 'platforms', required: true, readonlyInEdit: true, help: '归属平台创建后不可修改' },
+      { field: 'sortOrder', label: '排序', type: 'number', min: 0 },
       { field: 'status', label: '状态', type: 'select', required: true, default: 1, static: [{ value: 1, label: '启用' }, { value: 2, label: '停用' }] },
     ],
   },
@@ -326,9 +420,9 @@ export const FORMS = {
     fields: [
       { field: 'sessionName', label: '场次名', required: true, pattern: '^.{2,128}$', patternMessage: '场次名 2-128 个字符' },
       { field: 'startTime', label: '开始时间', type: 'datetime', required: true, toApi: toUtcIso, format: toLocalInput },
-      { field: 'endTime', label: '结束时间', type: 'datetime', required: true, toApi: toUtcIso, format: toLocalInput },
-      { field: 'sortOrder', label: '排序', type: 'number', min: 0, default: 0 },
-      { field: 'platformId', label: '归属平台', type: 'select', options: 'platforms', default: 0, readonlyInEdit: true, help: '归属平台创建后不可修改' },
+      { field: 'endTime', label: '结束时间', type: 'datetime', required: true, afterField: 'startTime', toApi: toUtcIso, format: toLocalInput },
+      { field: 'sortOrder', label: '排序', type: 'number', min: 0 },
+      { field: 'platformId', label: '归属平台', type: 'select', options: 'platforms', required: true, readonlyInEdit: true, help: '归属平台创建后不可修改' },
     ],
   },
 
@@ -343,8 +437,8 @@ export const FORMS = {
     fields: [
       { field: 'brandName', label: '品牌名', required: true, pattern: '^.{1,64}$', patternMessage: '品牌名 1-64 个字符' },
       { field: 'brandCode', label: '品牌编码', pattern: '^.{0,64}$', patternMessage: '品牌编码不能超过 64 个字符', help: '选填，填写时全局唯一' },
-      { field: 'logo', label: '品牌 Logo', help: '图片 URL' },
-      { field: 'sortOrder', label: '排序', type: 'number', min: 0, default: 0, help: '小的在前' },
+      { field: 'logo', label: '品牌 Logo', maxLength: 512, help: '图片 URL' },
+      { field: 'sortOrder', label: '排序', type: 'number', min: 0, help: '小的在前' },
       { field: 'status', label: '状态', type: 'select', required: true, default: 1, static: [{ value: 1, label: '启用' }, { value: 2, label: '停用' }] },
     ],
   },
@@ -361,11 +455,11 @@ export const FORMS = {
     listSource: { url: '/gateway/logistics-companies/List', method: 'POST' },
     fields: [
       { field: 'companyName', label: '公司名称', required: true, pattern: '^.{1,64}$', patternMessage: '公司名称 1-64 个字符' },
-      { field: 'companyCode', label: '公司编码', help: '如 sf、yto。留空即可' },
-      { field: 'logo', label: 'Logo', help: '图片 URL' },
-      { field: 'sortOrder', label: '排序', type: 'number', min: 0, default: 0, help: '小的在前，发货下拉按它排' },
+      { field: 'companyCode', label: '公司编码', maxLength: 32, help: '如 sf、yto。留空即可' },
+      { field: 'logo', label: 'Logo', maxLength: 512, help: '图片 URL' },
+      { field: 'sortOrder', label: '排序', type: 'number', min: 0, help: '小的在前，发货下拉按它排' },
       { field: 'status', label: '状态', type: 'select', required: true, default: 1, static: [{ value: 1, label: '启用' }, { value: 2, label: '停用' }] },
-      { field: 'remark', label: '备注', type: 'textarea', rows: 2 },
+      { field: 'remark', label: '备注', type: 'textarea', rows: 2, maxLength: 512 },
     ],
   },
 
@@ -385,9 +479,9 @@ export const FORMS = {
     // 都是必填，而这一页刻意不显示它们 —— 不带上就会被 400 挡下。
     carry: ['platformName', 'platformCode', 'contactName', 'contactPhone'],
     fields: [
-      { field: 'mallName', label: '商城名称', required: true, pattern: '^.{2,128}$', patternMessage: '商城名称 2-128 个字符' },
-      { field: 'logo', label: '平台 Logo', help: '图片 URL' },
-      { field: 'notice', label: '首页公告', type: 'textarea', rows: 3, help: '最多 500 字' },
+      { field: 'mallName', label: '商城名称', required: true, pattern: '^.{2,64}$', patternMessage: '商城名称 2-64 个字符' },
+      { field: 'logo', label: '平台 Logo', maxLength: 512, help: '图片 URL' },
+      { field: 'notice', label: '首页公告', type: 'textarea', rows: 3, maxLength: 500, help: '最多 500 字' },
       { field: 'primaryColor', label: '主题色', type: 'color', default: '#0071e3' },
       { field: 'tabColor', label: 'TabBar 选中色', type: 'color', default: '#0071e3' },
       { field: 'backgroundColor', label: '页面背景色', type: 'color', default: '#f5f5f7' },

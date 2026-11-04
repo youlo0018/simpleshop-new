@@ -192,14 +192,16 @@ public sealed class QueryRolesHandler : IRequestHandler<QueryRolesCommand, ApiRe
     {
         var (items, _) = await _roles.QueryPagedAsync(request.Page, request.PageSize, request.Keyword, ct);
 
-        var result = new List<RoleListItem>(items.Count);
-        foreach (var role in items)
-        {
-            var ids = await _roles.GetPermissionIdsAsync(role.Id, ct);
-            result.Add(new RoleListItem(
+        // 一次批量取回本页所有角色的权限点数：逐个角色查是 N+1（一页 20 个 = 20 条查询）
+        var permissionCounts = await _roles
+            .CountPermissionsByRoleAsync(items.Select(a => a.Id).ToList(), ct);
+
+        var result = items
+            .Select(role => new RoleListItem(
                 role.Id.ToString(), role.RoleName, role.Code, role.AllowedScopes,
-                role.DataScope, role.Status, role.IsBuiltin, ids.Count, role.Remark));
-        }
+                role.DataScope, role.Status, role.IsBuiltin,
+                permissionCounts.GetValueOrDefault(role.Id), role.Remark))
+            .ToList();
 
         return ApiResults.Ok(result);
     }

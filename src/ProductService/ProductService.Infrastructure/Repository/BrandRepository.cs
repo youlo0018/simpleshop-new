@@ -16,9 +16,17 @@ public sealed class BrandRepository : CrudRepository<Brand>, IBrandRepository
 
     /// <inheritdoc />
     public async Task<(List<Brand> Items, long Total)> QueryPagedAsync(
-        int page, int pageSize, string keyword, bool includeDisabled, CancellationToken ct = default)
+        int page, int pageSize, string keyword, bool includeDisabled,
+        CancellationToken ct = default, long platformId = 0)
     {
         var select = Db.Select<Brand>();
+
+        // 平台维度：品牌表里 platform_id = 0 表示「全平台公共」，必须一并放行
+        // （只查本平台会把公共品牌全部藏掉）
+        if (platformId > 0)
+        {
+            select = select.Where(a => a.PlatformId == 0 || a.PlatformId == platformId);
+        }
 
         if (!string.IsNullOrWhiteSpace(keyword))
         {
@@ -28,9 +36,14 @@ public sealed class BrandRepository : CrudRepository<Brand>, IBrandRepository
 
         if (!includeDisabled) select = select.Where(a => a.Status == 1);
 
+        // 分页参数在这里夹取（与其它仓储同一口径）：
+        // 不夹的话 pageSize=100000 就是一次全表拉取，而文档口径是 1-100。
+        var safePage = Math.Max(1, page);
+        var safeSize = Math.Clamp(pageSize, 1, 100);
+
         var total = await select.CountAsync(ct);
         var items = await select.OrderBy(a => a.SortOrder).OrderByDescending(a => a.Id)
-            .Page(page, pageSize).ToListAsync(ct);
+            .Page(safePage, safeSize).ToListAsync(ct);
 
         return (items, total);
     }

@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS promotion_activity (
     target_type      int           NOT NULL DEFAULT 1,
     -- 适用范围的 JSON 文本，结构随 target_type 变化
     targets          varchar(4096) NOT NULL DEFAULT '[]',
+    -- 小程序活动卡片展示（P09 活动 Tab / P11 活动商品列表）
+    cover_image      varchar(512)  NOT NULL DEFAULT '',
+    description      varchar(1000) NOT NULL DEFAULT '',
     -- 时间窗一律 UTC。「使用时按 now 过滤」不缓存，所以不需要把窗口拍到券上
     start_time       timestamp     NOT NULL,
     end_time         timestamp     NOT NULL,
@@ -47,6 +50,10 @@ CREATE TABLE IF NOT EXISTS promotion_activity (
     status           int           NOT NULL DEFAULT 1,
     CONSTRAINT pk_promotion_activity PRIMARY KEY (id)
 );
+
+-- 存量库补列：必须排在索引之前（CODING_STANDARD 陷阱 62）
+ALTER TABLE promotion_activity ADD COLUMN IF NOT EXISTS cover_image varchar(512)  NOT NULL DEFAULT '';
+ALTER TABLE promotion_activity ADD COLUMN IF NOT EXISTS description varchar(1000) NOT NULL DEFAULT '';
 
 -- 结算试算的热点路径：按「时间窗 + 状态 + 平台」筛出候选活动。
 -- 不建这个索引的话，订单量上来后每次试算都要全表扫，而试算在列表页是每屏都要跑一次。

@@ -43,7 +43,7 @@
           v-if="config.createRoute && hasPermission(config.createPermission || '')"
           type="primary"
           :icon="Plus"
-          @click="router.push(config.createRoute)"
+          @click="openAdminPage(config.createRoute)"
         >
           {{ config.createLabel || '新建' }}
         </el-button>
@@ -224,7 +224,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Plus } from '@element-plus/icons-vue';
 import request from '@/api/request';
@@ -232,6 +232,7 @@ import { optionSources } from '@/router/form-configs';
 import { statusColor, statusText } from '@/utils/dict';
 import { hasPermission } from '@/utils/session';
 import { toOptions } from '@/utils/options';
+import { openAdminPage } from '@/utils/navigation';
 import {
   formatAmount,
   formatCount,
@@ -263,7 +264,6 @@ function render(def: any, row: any) {
   return fn ? fn(row?.[def.field]) : emptyText(row?.[def.field]);
 }
 
-const router = useRouter();
 const route = useRoute();
 const loading = ref(true);
 const rows = ref<any[]>([]);
@@ -358,7 +358,7 @@ async function loadFilters() {
  * 编辑页的原值要么走详情端点，要么按 Id 从列表里捞一行 —— 而后者只取第一页。
  * 券模板有 400+ 条、跨好几页，从第 2 页点「编辑」就会捞不到那一行，
  * 页面提示「未找到该记录，可能已被删除」且表单全空，保存再把空值写回去。
- * 用 router state 传一份行数据，编辑页优先用它，列表兜底逻辑保持不动。
+ * 新标签打开时用短期页面状态传一份行数据，编辑页优先用它，列表兜底逻辑保持不动。
  */
 function goEdit(row: any) {
   const path = config.value.editRoute(row);
@@ -369,7 +369,7 @@ function goEdit(row: any) {
   } catch {
     state = undefined;
   }
-  router.push(state ? { path, state } : path);
+  openAdminPage(path, { state });
 }
 
 function showAction(action: any, row: any) {
@@ -436,7 +436,7 @@ function reload() {
 
 async function runAction(action: any, row: any) {
   if (action.route) {
-    router.push(action.route(row));
+    openAdminPage(action.route(row));
     return;
   }
 

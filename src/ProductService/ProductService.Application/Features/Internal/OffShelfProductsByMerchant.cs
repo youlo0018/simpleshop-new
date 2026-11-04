@@ -1,12 +1,11 @@
 using Collaboration.Domain.Common;
 using FluentValidation;
-using FreeSql;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ProductService.Application.Services;
 using ProductService.Domain.Entities;
-using ProductEntity = ProductService.Domain.Entities.Product;
+using ProductService.Domain.IRepository;
 
 namespace ProductService.Application.Features.Internal;
 
@@ -54,18 +53,19 @@ public static class OffShelfProductsByMerchantValidators
 public sealed class OffShelfProductsByMerchantHandler
     : IRequestHandler<OffShelfProductsByMerchantCommand, ApiResponse<OffShelfByMerchantResult>>
 {
-    private readonly IFreeSql _db;
+    private readonly IProductRepository _products;
     private readonly IProductSearchIndex _search;
     private readonly ILogger<OffShelfProductsByMerchantHandler> _logger;
 
     /// <summary>构造处理器。</summary>
-    /// <param name="db">FreeSql 实例。</param>
+    /// <param name="products">商品仓储。</param>
     /// <param name="search">搜索索引。</param>
     /// <param name="logger">日志器。</param>
     public OffShelfProductsByMerchantHandler(
-        IFreeSql db, IProductSearchIndex search, ILogger<OffShelfProductsByMerchantHandler> logger)
+        IProductRepository products, IProductSearchIndex search,
+        ILogger<OffShelfProductsByMerchantHandler> logger)
     {
-        _db = db;
+        _products = products;
         _search = search;
         _logger = logger;
     }
@@ -79,11 +79,8 @@ public sealed class OffShelfProductsByMerchantHandler
     {
         // 先捞出「已上架」的：已经下架的再下一遍是空操作，
         // 而把它们也算进 affected 会让调用方以为改动了东西
-        var listed = await _db.Select<ProductEntity>()
-            .Where(a => a.MerchantId == request.MerchantId
-                && a.Status == ListingStatuses.OnShelf
-                && a.IsDeleted == false)
-            .ToListAsync(a => new { a.Id, a.AuditStatus }, ct)
+        var listed = await _products
+            .ListOnShelfByMerchantAsync(request.MerchantId, ct)
             .ConfigureAwait(false);
 
         if (listed.Count == 0)
@@ -92,16 +89,8 @@ public sealed class OffShelfProductsByMerchantHandler
         }
 
         // 条件更新带上「当前仍是已上架」，避免与运营的上下架操作互相覆盖
-        var affected = await _db.Update<ProductEntity>()
-            .Where(a => a.MerchantId == request.MerchantId
-                && a.Status == ListingStatuses.OnShelf
-                && a.IsDeleted == false)
-            .Set(a => new ProductEntity
-            {
-                Status = ListingStatuses.OffShelf,
-                UpdatedAt = DateTime.UtcNow
-            })
-            .ExecuteAffrowsAsync(ct)
+        var affected = await _products
+            .OffShelfByMerchantAsync(request.MerchantId, ct)
             .ConfigureAwait(false);
 
         var synced = 0;

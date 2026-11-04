@@ -11,6 +11,13 @@ public interface ICartRepository
     /// <returns>购物车行列表。幂等只读。</returns>
     Task<List<CartItem>> ListAsync(long customerId, CancellationToken ct = default);
 
+    /// <summary>统计购物车的条目数（不同 SKU 的行数）。</summary>
+    /// <param name="customerId">客户 Id。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>条目数。</returns>
+    /// <remarks>加购前用它挡住「购物车无上限」：下单最多 50 行，购物车也不该无限长。</remarks>
+    Task<int> CountAsync(long customerId, CancellationToken ct = default);
+
     /// <summary>取某一行（按客户过滤，防止改别人的购物车）。</summary>
     /// <param name="customerId">客户 Id。</param>
     /// <param name="cartId">购物车行 Id。</param>

@@ -1,10 +1,9 @@
 using System.Text.Json;
 using Collaboration.Domain.Common;
 using Collaboration.Domain.Context;
-using Collaboration.Domain.Infrastructure;
-using FreeSql;
 using MediatR;
 using PointService.Domain.Entities;
+using PointService.Domain.IRepository;
 using PointService.Domain.Services;
 
 namespace PointService.Application.Features.Admin;
@@ -14,15 +13,15 @@ public sealed class QueryPointRulesHandler
     : IRequestHandler<QueryPointRulesCommand, ApiResponse<PointRulesView>>
 {
     private readonly IPointRuleProvider _rules;
-    private readonly IFreeSql _db;
+    private readonly IPointRuleConfigRepository _configs;
 
     /// <summary>构造处理器。</summary>
     /// <param name="rules">积分规则提供器。</param>
-    /// <param name="db">FreeSql 实例，用于判断哪些规则被后台改过。</param>
-    public QueryPointRulesHandler(IPointRuleProvider rules, IFreeSql db)
+    /// <param name="configs">规则配置仓储，用于判断哪些规则被后台改过。</param>
+    public QueryPointRulesHandler(IPointRuleProvider rules, IPointRuleConfigRepository configs)
     {
         _rules = rules;
-        _db = db;
+        _configs = configs;
     }
 
     /// <inheritdoc />
@@ -36,10 +35,7 @@ public sealed class QueryPointRulesHandler
         var current = await _rules.GetAsync(ct).ConfigureAwait(false);
         var d = PointRuleSnapshot.Defaults();
 
-        var customized = await _db.Select<PointRuleConfig>()
-            .Where(a => a.RuleValue != null && a.RuleValue != string.Empty)
-            .CountAsync(ct)
-            .ConfigureAwait(false) > 0;
+        var customized = await _configs.HasCustomizedAsync(ct).ConfigureAwait(false);
 
         var view = new PointRulesView(
             current.BalanceCap, current.ValidDays, current.RegisterGift, current.FirstEvaluateGift,
@@ -55,15 +51,15 @@ public sealed class QueryPointRulesHandler
 /// <summary>保存积分规则处理器。</summary>
 public sealed class SavePointRulesHandler : IRequestHandler<SavePointRulesCommand, ApiResponse>
 {
-    private readonly IFreeSql _db;
+    private readonly IPointRuleConfigRepository _configs;
     private readonly IPointRuleProvider _rules;
 
     /// <summary>构造处理器。</summary>
-    /// <param name="db">FreeSql 实例。</param>
+    /// <param name="configs">规则配置仓储。</param>
     /// <param name="rules">规则提供器，保存后要失效缓存。</param>
-    public SavePointRulesHandler(IFreeSql db, IPointRuleProvider rules)
+    public SavePointRulesHandler(IPointRuleConfigRepository configs, IPointRuleProvider rules)
     {
-        _db = db;
+        _configs = configs;
         _rules = rules;
     }
 
@@ -93,46 +89,10 @@ public sealed class SavePointRulesHandler : IRequestHandler<SavePointRulesComman
             [PointRuleKeys.SignInRewards] = JsonSerializer.Serialize(request.SignInRewards)
         };
 
-        var now = DateTime.UtcNow;
-
         foreach (var (key, value) in values)
         {
-            var existing = await _db.Select<PointRuleConfig>()
-                .Where(a => a.RuleKey == key)
-                .FirstAsync(ct)
-                .ConfigureAwait(false);
-
-            if (existing is null)
-            {
-                await _db.Insert(new PointRuleConfig
-                {
-                    Id = SnowflakeId.NewId(),
-                    CreatedAt = now,
-                    RuleKey = key,
-                    RuleValue = value,
-                    Description = Describe(key),
-                    UpdatedById = ctx.UserId,
-                    UpdatedByName = ctx.UserName
-                }).ExecuteAffrowsAsync(ct).ConfigureAwait(false);
-
-                continue;
-            }
-
-            // 用 Where + Set 而不是 Update(entity)：
-            // 后者在雪花主键（IsIdentity=false）下会生成空 SET 子句、一条 SQL 都不发
-            // 就返回 0，接口回「成功」而数据纹丝不动（见 CrudRepository 的 P0 修复说明）。
-            await _db.Update<PointRuleConfig>()
-                .Where(a => a.Id == existing.Id)
-                .Set(a => new PointRuleConfig
-                {
-                    RuleValue = value,
-                    Description = Describe(key),
-                    UpdatedAt = now,
-                    UpdatedById = ctx.UserId,
-                    UpdatedByName = ctx.UserName
-                })
-                .ExecuteAffrowsAsync(ct)
-                .ConfigureAwait(false);
+            await _configs.UpsertAsync(
+                key, value, Describe(key), ctx.UserId, ctx.UserName, ct).ConfigureAwait(false);
         }
 
         _rules.Invalidate();

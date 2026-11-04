@@ -21,6 +21,12 @@ public sealed class CartRepository : CrudRepository<CartItem>, ICartRepository
             .ToListAsync(ct);
 
     /// <inheritdoc />
+    public async Task<int> CountAsync(long customerId, CancellationToken ct = default)
+        => (int)await Db.Select<CartItem>()
+            .Where(a => a.CustomerId == customerId)
+            .CountAsync(ct);
+
+    /// <inheritdoc />
     public async Task<CartItem?> GetAsync(long customerId, long cartId, CancellationToken ct = default)
         => await Db.Select<CartItem>().Where(a => a.Id == cartId && a.CustomerId == customerId).FirstAsync(ct);
 

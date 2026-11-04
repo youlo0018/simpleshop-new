@@ -101,9 +101,26 @@ public sealed record OrderCreatedDto(
     bool AlreadyCreated);
 
 /// <summary>订单列表项。</summary>
+/// <param name="OrderId">订单 Id。</param>
+/// <param name="OrderNo">订单号。</param>
+/// <param name="Status">订单状态。</param>
+/// <param name="StatusName">状态中文名。</param>
+/// <param name="PayableAmount">实付金额。</param>
+/// <param name="ItemCount">商品总件数。</param>
+/// <param name="FirstProductName">首个商品名（列表摘要）。</param>
+/// <param name="CreatedAt">下单时间。</param>
+/// <param name="ReceiverName">收货人。</param>
+/// <param name="MerchantName">店铺名；0 表示平台自营，取不到时为空串。</param>
+/// <param name="Images">最多 3 个商品主图，用于列表缩略。</param>
+/// <param name="CanPay">是否可去支付（仅待支付）。</param>
+/// <param name="CanCancel">是否可取消（仅待支付）。</param>
+/// <param name="CanRefund">是否可申请退款（按配送方式判定退款窗口）。</param>
+/// <param name="CanConfirmReceipt">是否可确认收货（仅待收货）。</param>
 public sealed record OrderListItemDto(
     long OrderId, string OrderNo, int Status, string StatusName,
-    decimal PayableAmount, int ItemCount, string FirstProductName, string CreatedAt, string ReceiverName);
+    decimal PayableAmount, int ItemCount, string FirstProductName, string CreatedAt, string ReceiverName,
+    string MerchantName = "", IReadOnlyList<string>? Images = null,
+    bool CanPay = false, bool CanCancel = false, bool CanRefund = false, bool CanConfirmReceipt = false);
 
 /// <summary>供评价服务使用的订单信息。</summary>
 /// <remarks>
@@ -169,6 +186,15 @@ public sealed record OrderSkuForEvaluateDto(long SkuId, string SkuSpecText, long
 /// <param name="RefundedAmount">已退金额合计。后台据此显示「还能退多少」。</param>
 /// <param name="RemainingRefundable">剩余可退金额，后台退款表单的金额上限。</param>
 /// <param name="ActivityDiscount">整单活动优惠合计（各行之和）。</param>
+/// <param name="ShipRemark">
+/// 发货内容 / 发货备注：虚拟商品的卡号、激活码等交付物（发货时必填），快递发货备注选填；
+/// 未发货时为空串。客户端的虚拟订单详情靠它拿到交付内容。
+/// </param>
+/// <param name="PickupCode">
+/// 自提取货码：订单为「待取货」且含自提行时下发（Base64(RSA(订单号))），其余状态为空串。
+/// 前端只渲染二维码，不做加解密。
+/// </param>
+/// <param name="CanRefund">当前是否可申请退款，与订单列表使用同一退款窗口规则。</param>
 public sealed record OrderDetailDto(
     long OrderId, string OrderNo, int Status, string StatusName, bool CanCancel, bool CanConfirmReceipt,
     decimal GoodsTotal, decimal Freight, decimal PointsDeduction, decimal PayableAmount,
@@ -181,7 +207,10 @@ public sealed record OrderDetailDto(
     decimal ActivityDiscount = 0m,
     // 发货内容 / 发货备注：虚拟商品的卡号 / 激活码要展示给客户（后台发货时必填），
     // 快递发货备注选填。未发货时为空串。
-    string ShipRemark = "");
+    string ShipRemark = "",
+    // 自提取货码：订单处于「待取货」且含自提行时下发（Base64(RSA(订单号))），
+    // 其余状态为空串。前端只负责渲染二维码，不做任何加解密。
+    string PickupCode = "", bool CanRefund = false);
 
 /// <summary>订单行。</summary>
 /// <param name="OrderItemId">订单行 Id。<b>部分退款按它定位退哪一行</b>，缺了这个字段部分退款无从下手。</param>
@@ -199,11 +228,13 @@ public sealed record OrderDetailDto(
 /// <param name="SourceType">订单来源，见 <see cref="OrderSourceTypes"/>。后台订单列表要靠它区分秒杀单。</param>
 /// <param name="RefundedQuantity">该行已退数量，后台部分退款表单据此限制数量上限。</param>
 /// <param name="RefundableAmount">该行剩余可退金额（行实付 − 行已退）。</param>
+/// <param name="Image">商品主图（SKU 图）；取不到时为空串。</param>
 public sealed record OrderItemDto(
     long OrderItemId, long SkuId, long SpuId, string ProductName, string SkuSpecText,
     decimal Price, int Quantity, decimal OriginalAmount,
     decimal ActivityDiscount, decimal CouponDiscount, decimal PayableAmount, int DeliveryType,
-    int SourceType = 1, int RefundedQuantity = 0, decimal RefundableAmount = 0m);
+    int SourceType = 1, int RefundedQuantity = 0, decimal RefundableAmount = 0m,
+    string Image = "");
 
 // 分页信封已提到 Collaboration.Domain.Common.PagedResult —— 这个形状所有服务的列表接口都要用，
 // 留一份在这里的话下一个需要分页的服务就会再复制一份，两份字段名改得不一致时前端得为每个服务写一套取值逻辑。
@@ -265,12 +296,18 @@ public static class OrderValidators
             RuleFor(x => x.MerchantId).GreaterThanOrEqualTo(0).WithMessage("商户 Id 不能为负数");
             RuleFor(x => x.IdempotencyKey).NotEmpty().MaximumLength(64)
                 .WithMessage("缺少幂等键，请重新进入结算页后再提交");
-            RuleFor(x => x.ReceiverName).NotEmpty().MaximumLength(64).WithMessage("请填写收货人姓名，最多 64 个字符");
+            // 收货资料按整单实际包含的配送方式判定：
+            // 快递 / 自提需要联系人，纯虚拟单不需要；只有快递需要详细地址。
+            RuleFor(x => x.ReceiverName).NotEmpty().MaximumLength(64)
+                .WithMessage("请填写收货人姓名，最多 64 个字符")
+                .When(x => RequiresContact(x.Lines));
             RuleFor(x => x.ReceiverPhone).NotEmpty().MaximumLength(20)
                 .Matches(ValidationPatterns.phonePattern)
-                .WithMessage("请填写正确的手机号");
+                .WithMessage("请填写正确的手机号")
+                .When(x => RequiresContact(x.Lines));
             RuleFor(x => x.ReceiverAddress).NotEmpty().MaximumLength(256)
-                .WithMessage("请填写收货地址，最多 256 个字符");
+                .WithMessage("请填写收货地址，最多 256 个字符")
+                .When(x => RequiresAddress(x.Lines));
             RuleFor(x => x.Remark).MaximumLength(512).WithMessage("备注最多 512 个字符");
             RuleFor(x => x.Freight).InclusiveBetween(0m, MaxFreight).WithMessage("运费超出允许范围");
             RuleFor(x => x.PointsToUse).GreaterThanOrEqualTo(0).WithMessage("抵扣积分数不能为负数");
@@ -295,6 +332,18 @@ public static class OrderValidators
                 .Must(list => list.Select(a => a.SkuId).Distinct().Count() == list.Count)
                 .WithMessage("同一商品规格不能重复出现在订单里，请合并数量后重试");
         }
+
+        /// <summary>订单是否包含需要联系人的实物配送方式。</summary>
+        /// <param name="lines">订单行；为空时交给订单行必填规则处理。</param>
+        /// <returns>包含快递或自提返回 true。</returns>
+        private static bool RequiresContact(IReadOnlyList<OrderLineRequest>? lines)
+            => lines?.Any(a => a.DeliveryType is DeliveryTypes.Express or DeliveryTypes.SelfPickup) == true;
+
+        /// <summary>订单是否包含需要详细地址的实物快递。</summary>
+        /// <param name="lines">订单行；为空时交给订单行必填规则处理。</param>
+        /// <returns>包含实物快递返回 true。</returns>
+        private static bool RequiresAddress(IReadOnlyList<OrderLineRequest>? lines)
+            => lines?.Any(a => a.DeliveryType == DeliveryTypes.Express) == true;
     }
 
     /// <summary>订单分页查询校验。</summary>

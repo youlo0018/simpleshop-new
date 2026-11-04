@@ -1,10 +1,8 @@
 using Collaboration.Domain.Common;
 using FluentValidation;
-using FreeSql;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
-using ProductEntity = ProductService.Domain.Entities.Product;
-using SkuEntity = ProductService.Domain.Entities.Sku;
+using ProductService.Domain.IRepository;
 
 namespace ProductService.Application.Features.Internal;
 
@@ -67,11 +65,11 @@ public static class CheckProductTargetsValidators
 public sealed class CheckProductTargetsHandler
     : IRequestHandler<CheckProductTargetsCommand, ApiResponse<CheckProductTargetsResult>>
 {
-    private readonly IFreeSql _db;
+    private readonly IProductRepository _products;
 
     /// <summary>构造处理器。</summary>
-    /// <param name="db">FreeSql 实例。</param>
-    public CheckProductTargetsHandler(IFreeSql db) => _db = db;
+    /// <param name="products">商品仓储。</param>
+    public CheckProductTargetsHandler(IProductRepository products) => _products = products;
 
     /// <summary>执行校验。</summary>
     /// <param name="request">校验命令。</param>
@@ -88,10 +86,7 @@ public sealed class CheckProductTargetsHandler
         // ---- SPU：直接按 product 表判归属 ----
         if (spuIds.Count > 0)
         {
-            var products = await _db.Select<ProductEntity>()
-                .Where(a => spuIds.Contains(a.Id))
-                .ToListAsync(a => new { a.Id, a.PlatformId, a.MerchantId }, ct)
-                .ConfigureAwait(false);
+            var products = await _products.GetByIdsAsync(spuIds, ct).ConfigureAwait(false);
 
             var byId = products.ToDictionary(a => a.Id);
 
@@ -111,18 +106,13 @@ public sealed class CheckProductTargetsHandler
         // ---- SKU：归属跟着它的 SPU 走 ----
         if (skuIds.Count > 0)
         {
-            var skus = await _db.Select<SkuEntity>()
-                .Where(a => skuIds.Contains(a.Id))
-                .ToListAsync(a => new { a.Id, a.ProductId }, ct)
+            var skus = await _products.GetSkusByIdsAsync(skuIds, onlyEnabled: false, ct)
                 .ConfigureAwait(false);
 
             var productIds = skus.Select(a => a.ProductId).Distinct().ToList();
             var owners = productIds.Count == 0
                 ? new Dictionary<long, (long PlatformId, long MerchantId)>()
-                : (await _db.Select<ProductEntity>()
-                        .Where(a => productIds.Contains(a.Id))
-                        .ToListAsync(a => new { a.Id, a.PlatformId, a.MerchantId }, ct)
-                        .ConfigureAwait(false))
+                : (await _products.GetByIdsAsync(productIds, ct).ConfigureAwait(false))
                     .ToDictionary(a => a.Id, a => (a.PlatformId, a.MerchantId));
 
             var skuById = skus.ToDictionary(a => a.Id);

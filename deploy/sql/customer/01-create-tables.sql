@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS customer (
     updated_at      timestamp    NULL,
     is_deleted      boolean      NOT NULL DEFAULT false,
     deleted_at      timestamp    NULL,
+    -- 所属平台：每个平台各自一套客户账号（平台内唯一），同一手机号可在不同平台各注册一个
+    platform_id     bigint       NOT NULL DEFAULT 0,
     customer_no     varchar(64)  NOT NULL DEFAULT '',
     customer_name   varchar(64)  NOT NULL,
     password_hash   varchar(256) NOT NULL,
@@ -29,19 +31,29 @@ CREATE TABLE IF NOT EXISTS customer (
 ALTER TABLE customer ADD COLUMN IF NOT EXISTS status integer NOT NULL DEFAULT 1;
 ALTER TABLE customer ADD COLUMN IF NOT EXISTS customer_no varchar(64) NOT NULL DEFAULT '';
 UPDATE customer SET customer_no = 'C' || id WHERE customer_no = '';
+ALTER TABLE customer ADD COLUMN IF NOT EXISTS platform_id bigint NOT NULL DEFAULT 0;
 
-CREATE UNIQUE INDEX IF NOT EXISTS uk_customer_name ON customer (customer_name);
-CREATE UNIQUE INDEX IF NOT EXISTS uk_customer_phone ON customer (phone);
+-- 账号改为平台内唯一：老的全局唯一索引必须删掉，否则「同一手机号在两个平台各注册一个」
+-- 会被老索引挡住。DROP 在 CREATE 之前，重复执行同样安全。
+DROP INDEX IF EXISTS uk_customer_name;
+DROP INDEX IF EXISTS uk_customer_phone;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_customer_platform_name
+    ON customer (platform_id, customer_name) WHERE is_deleted = false;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_customer_platform_phone
+    ON customer (platform_id, phone) WHERE is_deleted = false;
 CREATE UNIQUE INDEX IF NOT EXISTS uk_customer_no
     ON customer (customer_no) WHERE is_deleted = false AND customer_no <> '';
 -- 后台按状态筛选用；没有它，「只看停用客户」会全表扫
 CREATE INDEX IF NOT EXISTS idx_customer_status ON customer (status) WHERE is_deleted = false;
+-- 后台「按平台筛选客户」用；超管按平台看客户时没有它就会全表扫
+CREATE INDEX IF NOT EXISTS idx_customer_platform ON customer (platform_id) WHERE is_deleted = false;
 
 COMMENT ON TABLE  customer            IS '前台客户账号（DATA_SPEC 2.6）';
 COMMENT ON COLUMN customer.password_hash IS '只存哈希，禁止明文';
 COMMENT ON COLUMN customer.customer_no    IS '客户唯一编码，客服与订单检索使用';
 COMMENT ON COLUMN customer.gender        IS '0 未知 / 1 男 / 2 女';
 COMMENT ON COLUMN customer.status        IS '1 正常 / 2 停用（停用后禁止登录）';
+COMMENT ON COLUMN customer.platform_id   IS '所属平台；客户账号平台内唯一（同一手机号可在不同平台各注册一个）';
 
 CREATE TABLE IF NOT EXISTS customer_address (
     id              bigint       NOT NULL,

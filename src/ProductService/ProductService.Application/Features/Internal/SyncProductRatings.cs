@@ -1,13 +1,9 @@
 using Collaboration.Domain.Common;
 using FluentValidation;
-using FreeSql;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using ProductService.Domain.Entities;
-// `Features/Product` 这个命名空间段会遮蔽同名实体 `Product`（CODING_STANDARD §6 第 1 条）。
-// 不加别名的话 `Update<Product>()` 报 CS0118「Product 是命名空间，但此处被当做类型」。
-using ProductEntity = ProductService.Domain.Entities.Product;
+using ProductService.Domain.IRepository;
 
 namespace ProductService.Application.Features.Internal;
 
@@ -72,15 +68,16 @@ public static class SyncProductRatingsValidators
 public sealed class SyncProductRatingsHandler
     : IRequestHandler<SyncProductRatingsCommand, ApiResponse<SyncProductRatingsResult>>
 {
-    private readonly IFreeSql _db;
+    private readonly IProductRepository _products;
     private readonly ILogger<SyncProductRatingsHandler> _logger;
 
     /// <summary>构造处理器。</summary>
-    /// <param name="db">FreeSql 实例。</param>
+    /// <param name="products">商品仓储。</param>
     /// <param name="logger">日志器。</param>
-    public SyncProductRatingsHandler(IFreeSql db, ILogger<SyncProductRatingsHandler> logger)
+    public SyncProductRatingsHandler(
+        IProductRepository products, ILogger<SyncProductRatingsHandler> logger)
     {
-        _db = db;
+        _products = products;
         _logger = logger;
     }
 
@@ -97,17 +94,11 @@ public sealed class SyncProductRatingsHandler
         foreach (var item in request.Items)
         {
             // 条件更新带上「当前值」，避免与后台的编辑操作互相覆盖
-            var affected = await _db.Update<ProductEntity>()
-                .Where(a => a.Id == item.SpuId)
-                .Set(a => new ProductEntity
-                {
-                    EvaluationScore = item.Score,
-                    EvaluationCount = item.Count,
-                    UpdatedAt = DateTime.UtcNow
-                })
-                .ExecuteAffrowsAsync(ct);
+            var updatedOk = await _products
+                .UpdateRatingsAsync(item.SpuId, item.Score, item.Count, ct)
+                .ConfigureAwait(false);
 
-            if (affected > 0)
+            if (updatedOk)
             {
                 updated++;
             }

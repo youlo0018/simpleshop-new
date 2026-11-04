@@ -1,3 +1,4 @@
+using Collaboration.Domain.Validation;
 using FluentValidation;
 
 namespace CustomerService.Application.Features.Customer.Login;
@@ -17,6 +18,11 @@ public class LoginValidator : AbstractValidator<LoginCommand>
 
         RuleFor(x => x.Password).NotEmpty().WithMessage("密码必填");
         RuleFor(x => x.Password).MaximumLength(64).WithMessage("密码长度不能超过 64 个字符");
+
+        // 平台编码：客户账号是平台内账号，登录必须先确定在哪个平台里找账号
+        RuleFor(x => x.PlatformCode).NotEmpty().WithMessage("缺少平台信息");
+        RuleFor(x => x.PlatformCode).Matches(ValidationPatterns.platformCodePattern)
+            .WithMessage("平台编码不正确");
     }
 }
 

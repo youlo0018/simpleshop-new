@@ -56,7 +56,9 @@ $token = ($tokenResp.Content.ReadAsStringAsync().GetAwaiter().GetResult() | Conv
 $script:adminHeaders = @{ Authorization = "Bearer $token" }
 
 # ---------- 上传辅助 ----------
-$script:tmpDir = Join-Path $env:TEMP "simpleshop-upload-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+# 临时目录用 GetTempPath 而不是 $env:TEMP：后者在 Linux 上是空的，
+# 会让整条脚本在 New-Item 处直接异常（跨平台回归跑不起来）。
+$script:tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "simpleshop-upload-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 New-Item -ItemType Directory -Force -Path $script:tmpDir | Out-Null
 
 function New-UploadFile([string]$FileName, [byte[]]$Bytes) {

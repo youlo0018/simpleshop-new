@@ -1,5 +1,6 @@
 using Collaboration.Domain.Common;
 using MediatR;
+using PaymentService.Application.Features.Refund;
 using PaymentService.Application.Services;
 using PaymentService.Domain.Entities;
 using PaymentService.Domain.IRepository;
@@ -97,7 +98,8 @@ public sealed class QueryAdminRefundDetailHandler
                 : "平台自营",
             refund.MerchantId > 0
                 ? names.Merchants.GetValueOrDefault(refund.MerchantId, refund.MerchantId.ToString())
-                : "平台自营");
+                : "平台自营",
+            RefundAssembler.ParseImages(refund.Images));
 
         return ApiResults.Ok(dto);
     }

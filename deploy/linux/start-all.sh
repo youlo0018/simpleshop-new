@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 一键启动 SimpleShop（Linux Mint / 16G 低内存档）。
 #
-#   ./start-all.sh              # minimal：核心中间件 + 全部服务 + 两个前端
+#   ./start-all.sh              # minimal：核心中间件 + 全部服务 + 后台前端
 #   ./start-all.sh standard     # + RabbitMQ（事件总线）
 #   ./start-all.sh full         # + ES / Kibana / Fluentd / Consul + LogService
 #
@@ -41,5 +41,4 @@ bash "$LINUX_DIR/start-web.sh"
 echo
 ok "启动完成（档位 $TIER，耗时 $(( $(date +%s) - started_at ))s）"
 gray "后台管理端  http://127.0.0.1:5173"
-gray "商城 H5     http://127.0.0.1:5174"
 gray "查看状态    ./status.sh"

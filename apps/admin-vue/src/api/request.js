@@ -66,18 +66,31 @@ export async function request(path, options = {}) {
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
+  // fetch 默认**没有超时**：连接被服务端或中间层丢掉时 Promise 会挂很久，
+  // 页面停在 loading、用户以为「点不动了」。15 秒没响应就主动中止并给出明确提示，
+  // 让用户知道该重试，而不是对着一个永远转圈的表单。
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
   let response;
   try {
     response = await fetch(url.toString(), {
       method,
       headers,
       credentials: 'include',
+      signal: controller.signal,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-  } catch {
-    const err = new Error('网络连接失败，请检查后端服务是否已启动');
+  } catch (error) {
+    const aborted = error?.name === 'AbortError';
+    const err = new Error(
+      aborted ? '请求超时，请重试' : '网络连接失败，请检查后端服务是否已启动',
+    );
     if (!silent) ElMessage.error(err.message);
     throw err;
+  } finally {
+    window.clearTimeout(timer);
   }
 
   if (response.status === 401) {

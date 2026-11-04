@@ -77,6 +77,20 @@ public class Order : EntityBase
     [Column(Name = "refunded_amount")]
     public decimal RefundedAmount { get; set; }
 
+    /// <summary>
+    /// 实付 0 元订单的「占用结清」状态：0 未结清 / 1 已结清。
+    /// </summary>
+    /// <remarks>
+    /// <para>实付 0 元的单没有支付这一步，创建时就进 20 待发货，但库存仍锁着、
+    /// 积分仍冻着、券仍占着 —— 这些占用靠下单后当场调 <c>OrderPaymentCompleter</c> 结清。
+    /// 结清任一步失败（下游抖动）时订单已经落库、用户看到的是「待发货」，
+    /// 没有这个标志位，补偿任务就分不清「已经结清」和「还欠着账」，
+    /// 只能对每张 0 元单反复重放全部下游调用。</para>
+    /// <para>结清成功后置 1；补偿任务只扫 <c>settle_status = 0</c> 的 0 元单。</para>
+    /// </remarks>
+    [Column(Name = "settle_status")]
+    public int SettleStatus { get; set; }
+
     /// <summary>收货地址快照。下单那一刻的地址，之后改地址不影响已有订单。</summary>
     [Column(Name = "receiver_name", StringLength = 64)]
     public string ReceiverName { get; set; } = string.Empty;

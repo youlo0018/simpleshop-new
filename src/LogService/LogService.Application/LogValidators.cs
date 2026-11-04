@@ -54,6 +54,7 @@ public static class LogValidators
         services.AddScoped<IValidator<GetExceptionStackCommand>, GetExceptionStackValidator>();
         services.AddScoped<IValidator<QueryDeadLettersCommand>, QueryDeadLettersValidator>();
         services.AddScoped<IValidator<ReplayDeadLetterCommand>, ReplayDeadLetterValidator>();
+        services.AddScoped<IValidator<QueryPvCountBySessionCommand>, QueryPvCountBySessionValidator>();
     }
 
     /// <summary>日志查询的公共规则。</summary>
@@ -130,6 +131,29 @@ public static class LogValidators
         public ReplayDeadLetterValidator()
         {
             RuleFor(x => x.EventId).NotEmpty().MaximumLength(64).WithMessage("死信记录不正确");
+        }
+    }
+
+    /// <summary>场次 PV 统计校验。</summary>
+    private sealed class QueryPvCountBySessionValidator : AbstractValidator<QueryPvCountBySessionCommand>
+    {
+        /// <summary>一次最多统计的场次数量。</summary>
+        /// <remarks>
+        /// 与秒杀报表的场次上限（200）留出余量：调用方一页最多 200 个场次，
+        /// 超过这个数说明调用方在拼一个不合理的请求，早点拒绝比让 ES 生成巨大 terms 查询好。
+        /// </remarks>
+        private const int MaxSessionCount = 500;
+
+        /// <summary>构造校验器。</summary>
+        public QueryPvCountBySessionValidator()
+        {
+            RuleFor(x => x.Path).NotEmpty().MaximumLength(512).WithMessage("埋点路径不正确");
+            RuleFor(x => x.SessionIds).NotNull().WithMessage("场次列表不能为空");
+            RuleFor(x => x.SessionIds)
+                .Must(v => v is null || v.Count <= MaxSessionCount)
+                .WithMessage("一次最多统计 500 个场次");
+            RuleForEach(x => x.SessionIds).GreaterThan(0).WithMessage("场次 Id 必须为正数");
+            RuleFor(x => x.To).Must((x, v) => v > x.From).WithMessage("结束时间必须晚于开始时间");
         }
     }
 }

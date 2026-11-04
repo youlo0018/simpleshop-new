@@ -11,6 +11,7 @@ namespace PointService.Application.Features.Admin;
 /// <param name="CustomerId">客户 Id 过滤，0 表示不限。</param>
 /// <param name="Action">动作过滤，空表示不限（earn / lock / unfreeze / consume / refund / expire / signin）。</param>
 /// <param name="BizNo">业务单号过滤，空表示不限。</param>
+/// <param name="Keyword">后台搜索框关键词：业务单号模糊匹配，空表示不限。</param>
 public record QueryAdminPointRecordsCommand(
     int Page = 1,
     int PageSize = 20,

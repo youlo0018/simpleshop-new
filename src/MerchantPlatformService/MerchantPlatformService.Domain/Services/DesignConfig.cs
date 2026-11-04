@@ -31,6 +31,14 @@ public sealed class DesignConfig
     [JsonPropertyName("pages")]
     public Dictionary<string, DesignPage> Pages { get; set; } = [];
 
+    /// <summary>商城页 Tab 配置。</summary>
+    [JsonPropertyName("mallTabs")]
+    public List<DesignMallTab> MallTabs { get; set; } = [];
+
+    /// <summary>商城页默认 Tab。</summary>
+    [JsonPropertyName("defaultMallTab")]
+    public string DefaultMallTab { get; set; } = "recommend";
+
     /// <summary>地区地址。</summary>
     [JsonPropertyName("regions")]
     public DesignRegions Regions { get; set; } = new();
@@ -87,6 +95,26 @@ public sealed class DesignPage
     /// <summary>组件列表，画布是**单层扁平**结构，不做嵌套容器。</summary>
     [JsonPropertyName("components")]
     public List<DesignComponent> Components { get; set; } = [];
+}
+
+/// <summary>商城页 Tab。</summary>
+public sealed class DesignMallTab
+{
+    /// <summary>稳定键：seckill / recommend / activity。</summary>
+    [JsonPropertyName("key")]
+    public string Key { get; set; } = string.Empty;
+
+    /// <summary>展示文案。</summary>
+    [JsonPropertyName("label")]
+    public string Label { get; set; } = string.Empty;
+
+    /// <summary>是否显示。</summary>
+    [JsonPropertyName("visible")]
+    public bool Visible { get; set; } = true;
+
+    /// <summary>排序值。</summary>
+    [JsonPropertyName("sort")]
+    public int Sort { get; set; }
 }
 
 /// <summary>画布上的一个组件实例。</summary>

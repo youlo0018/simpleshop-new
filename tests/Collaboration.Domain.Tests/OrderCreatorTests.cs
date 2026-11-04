@@ -1121,6 +1121,9 @@ public class OrderCreatorTests
         /// <summary>最近一次退款回收用的比例，供用例断言「按本次退款额算比例」。</summary>
         public decimal LastRecoverRatio;
 
+        /// <summary>最近一次退款回收用的退款单号，供用例断言幂等键带上了它。</summary>
+        public string LastRecoverRefundNo = string.Empty;
+
         /// <summary>
         /// 最近一次<b>实际</b>锁定的积分数。断言它而不是断言请求值：
         /// 「夹到上限」这件事发生在编排器里，端口只看到夹完之后的数字。
@@ -1155,13 +1158,16 @@ public class OrderCreatorTests
         /// <summary>退款按比例回收积分。记下比例供断言，行为本身在积分服务里。</summary>
         /// <param name="customerId">客户 Id。</param>
         /// <param name="orderNo">订单号。</param>
+        /// <param name="refundNo">退款单号。</param>
         /// <param name="refundRatio">退款比例。</param>
         /// <param name="ct">取消令牌。</param>
         /// <returns>异步任务。</returns>
         public Task RecoverByRefundAsync(
-            long customerId, string orderNo, decimal refundRatio, CancellationToken ct = default)
+            long customerId, string orderNo, string refundNo, decimal refundRatio,
+            CancellationToken ct = default)
         {
             RecoverCount++;
+            LastRecoverRefundNo = refundNo;
             LastRecoverRatio = refundRatio;
             return Task.CompletedTask;
         }
@@ -1348,6 +1354,35 @@ public class OrderCreatorTests
         public Task<int> TryApplyRefundAsync(
             long orderId, int fromStatus, decimal amount, bool fullyRefunded,
             CancellationToken ct = default)
+            => Task.FromResult(1);
+
+        /// <summary>台账与余额同事务写：下单链路的用例不依赖它，返回 true 表示生效。</summary>
+        /// <param name="orderId">订单 Id。</param>
+        /// <param name="fromStatus">期望的原状态。</param>
+        /// <param name="amount">本次退款金额。</param>
+        /// <param name="fullyRefunded">是否退完。</param>
+        /// <param name="refund">退款记录主表。</param>
+        /// <param name="items">退款明细。</param>
+        /// <param name="ct">取消令牌。</param>
+        /// <returns>true。</returns>
+        public Task<bool> ApplyRefundWithLedgerAsync(
+            long orderId, int fromStatus, decimal amount, bool fullyRefunded,
+            OrderRefund refund, IReadOnlyCollection<OrderRefundItem> items, CancellationToken ct = default)
+            => Task.FromResult(true);
+
+        /// <summary>0 元结清补偿查询：下单链路的用例不依赖它，返回空列表。</summary>
+        /// <param name="limit">最多取多少张。</param>
+        /// <param name="ct">取消令牌。</param>
+        /// <returns>空列表。</returns>
+        public Task<List<Order>> ListPendingZeroPaySettlementsAsync(
+            int limit, CancellationToken ct = default)
+            => Task.FromResult(new List<Order>());
+
+        /// <summary>0 元结清标志：下单链路的用例不依赖它，返回 1 表示写入成功。</summary>
+        /// <param name="orderId">订单 Id。</param>
+        /// <param name="ct">取消令牌。</param>
+        /// <returns>1。</returns>
+        public Task<int> MarkSettledAsync(long orderId, CancellationToken ct = default)
             => Task.FromResult(1);
 
         /// <summary>退款记录查询：下单链路的用例不依赖它，返回空列表即可。</summary>

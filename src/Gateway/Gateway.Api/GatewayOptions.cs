@@ -31,6 +31,8 @@ public sealed class GatewayOptions
     [
         "/gateway/customers/Register",
         "/gateway/customers/Login",
+        "/gateway/customers/SendPasswordResetCode",
+        "/gateway/customers/ResetPassword",
         "/gateway/auth/Token",
         "/gateway/shop/products/List",
         "/gateway/shop/products/Detail",
@@ -40,11 +42,28 @@ public sealed class GatewayOptions
         "/gateway/shop/products/Search",
         "/gateway/shop/catalog/CategoryTree",
         "/gateway/shop/catalog/Brands",
+        "/gateway/shop/catalog/MerchantCategories",
+        // 搜索页的热搜词与联想词：游客可浏览（P05）
+        "/gateway/shop/search/HotWords",
+        "/gateway/shop/search/Suggest",
         "/gateway/design/Store",
         "/gateway/design/PlatformStore",
+        // 平台公开信息：小程序运行期切换平台、渲染商城名 / Logo / 主题色 / 协议页都要用，
+        // 切换发生在登录之前，因此必须匿名可调。
+        "/gateway/platforms/Public",
+        "/gateway/platforms/PublicDetail",
+        // 小程序首页公告轮播（多条，匿名可读）
+        "/gateway/platforms/notices/Public",
         "/gateway/regions/Public",
         "/gateway/evaluates/List",
+        "/gateway/evaluates/Merchant",
         "/gateway/marketing/seckill/sessions/Public",
+        // 活动专区 / 商城页活动 Tab：游客可浏览进行中的普通活动
+        "/gateway/marketing/activities/Public",
+        // 场次曝光埋点：游客也能浏览秒杀频道，埋点必须匿名可用。
+        // 少了它前端 PV 埋点会 401（游客直接进不去秒杀页的埋点），
+        // 表现为「有曝光但报表 PV 恒为 0」。
+        "/gateway/marketing/seckill/sessions/View",
         "/gateway/coupons/Available"
     ];
 
@@ -78,6 +97,93 @@ public sealed class GatewayOptions
         "/gateway/files/Upload",
         "/gateway/refunds/Apply"
     ];
+
+    /// <summary>
+    /// 客户令牌可访问的 C 端路径（精确路径）。
+    /// </summary>
+    /// <remarks>
+    /// <para>这些接口<b>刻意不绑后台权限点</b>（绑了会把小程序自己挡掉），
+    /// 所以在 RBAC 映射里查不到。网关的判定曾经是「查不到映射 → 放行」，
+    /// 于是任何漏配 api_path 的后台接口都会被客户令牌穿透——
+    /// <c>/gateway/payments/Simulate</c> 就是这么出的事（顾客把自己的订单标成已支付）。</para>
+    ///
+    /// <para>现在改成 <b>fail-closed</b>：客户令牌走到未映射路径时，只有命中这张
+    /// 显式清单才放行。新增 C 端接口必须在这里登记，漏登记的症状是 403 ——
+    /// 一个立刻能发现、且不会泄露数据的失败方式，比默认放行安全得多。</para>
+    /// </remarks>
+    public string[] CustomerPaths { get; set; } =
+    [
+        // 客户资料与地址 / 收藏（注册 / 登录是匿名白名单，不在这里判）
+        "/gateway/customers/Profile",
+        "/gateway/customers/UpdateProfile",
+        "/gateway/customers/ChangePassword",
+        // 令牌刷新与登出：必须带有效客户令牌（登出后旧令牌立刻失效）
+        "/gateway/customers/Refresh",
+        "/gateway/customers/Logout",
+
+        // 购物车
+        "/gateway/carts/Add",
+        "/gateway/carts/List",
+        "/gateway/carts/SetQuantity",
+        "/gateway/carts/Remove",
+        "/gateway/carts/SetChecked",
+        "/gateway/carts/Clear",
+
+        // 订单（后台订单走 /gateway/admin/orders/*，不在这张表里）
+        "/gateway/orders/Create",
+        "/gateway/orders/Preview",
+        "/gateway/orders/List",
+        "/gateway/orders/Detail",
+        "/gateway/orders/Cancel",
+        "/gateway/orders/ConfirmReceipt",
+
+        // 支付：创建 / 确认 / 查询。Simulate 是后台接口且有权限映射，不走这张表。
+        "/gateway/payments/Create",
+        "/gateway/payments/Confirm",
+        "/gateway/payments/Query",
+
+        // 积分
+        "/gateway/points/SignIn",
+        "/gateway/points/Balance",
+        "/gateway/points/Records",
+
+        // 评价
+        "/gateway/evaluates/My",
+        "/gateway/evaluates/Evaluable",
+        "/gateway/evaluates/Publish",
+        "/gateway/evaluates/Append",
+
+        // 券：结算试算 / 占券 / 核销 / 回退都要经网关给小程序用
+        // （Available 是匿名白名单，不在这里判）
+        "/gateway/coupons/Claim",
+        "/gateway/coupons/My",
+        "/gateway/coupons/Settle",
+        "/gateway/coupons/Occupy",
+        "/gateway/coupons/Consume",
+        "/gateway/coupons/Release",
+
+        // 营销：秒杀抢购与结果轮询、商品到手价
+        "/gateway/marketing/seckill/grab",
+        "/gateway/marketing/activities/FinalPrice",
+        "/gateway/marketing/activities/FinalPriceBatch",
+
+        // 客户退款进度：列表 / 详情 / 撤销（纯 C 端，不绑后台权限点）
+        "/gateway/refunds/My",
+        "/gateway/refunds/MyDetail",
+        "/gateway/refunds/CancelMy"
+    ];
+
+    /// <summary>
+    /// 客户令牌可访问的 C 端路径前缀（带路径参数的接口）。
+    /// </summary>
+    /// <remarks>与 <see cref="CustomerPaths"/> 是同一套 fail-closed 清单，只是按前缀登记。
+    /// 前缀必须写得足够窄：<c>/gateway/customers/</c> 这种会把同前缀下的后台接口一起放进来。</remarks>
+    public string[] CustomerPathPrefixes { get; set; } =
+    [
+        "/gateway/customers/addresses/",
+        "/gateway/customers/favorites/",
+        "/gateway/marketing/seckill/grab/"
+    ];
 }
 
 /// <summary>后台令牌（RS256）配置。</summary>
@@ -99,6 +205,15 @@ public sealed class CustomerTokenOptions
     /// <summary>HS256 共享密钥。与 CustomerService 签发时用的是同一个值。</summary>
     /// <remarks>至少 32 字节；短密钥在 HS256 下等于形同虚设，会被离线爆破。</remarks>
     public string Secret { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 客户会话的滑动续期时长（小时），应与 CustomerService 的 <c>Jwt:ExpireHours</c> 一致。
+    /// </summary>
+    /// <remarks>
+    /// 网关按它给会话键续期：用户只要还在用，会话就不会因为「静止」过期；
+    /// 但**令牌本身**仍按签发时的有效期到期，客户端要用 /customers/Refresh 换新令牌。
+    /// </remarks>
+    public int SessionHours { get; set; } = 12;
 }
 
 /// <summary>网关 RBAC 配置。</summary>

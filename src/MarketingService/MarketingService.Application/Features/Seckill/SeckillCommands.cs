@@ -78,6 +78,16 @@ public record DeleteSessionItemCommand(long ItemId) : IRequest<ApiResponse>;
 public record QueryPublicSessionsCommand(long PlatformId = 0, long SessionId = 0)
     : IRequest<ApiResponse<List<PublicSessionDto>>>;
 
+/// <summary>秒杀场次曝光埋点（PV）。</summary>
+/// <param name="SessionId">被浏览的场次 Id。</param>
+/// <remarks>
+/// 命令本身不写库：PV 由请求日志中间件在请求结束时记进 pv.log
+/// （从查询串取 <c>sessionId</c>），日志服务再聚合进秒杀报表。
+/// 端点存在的意义是给前端一个「一次曝光 = 一次请求」的锚点 ——
+/// 场次 Id 放在请求体里的话根本不进日志，报表就无从归因。
+/// </remarks>
+public record RecordSessionViewCommand(long SessionId) : IRequest<ApiResponse>;
+
 
 /// <summary>发布结果。</summary>
 /// <param name="SessionId">场次 Id。</param>
@@ -180,6 +190,7 @@ public static class SeckillValidators
         services.AddScoped<IValidator<QuerySessionItemsCommand>, QuerySessionItemsValidator>();
         services.AddScoped<IValidator<DeleteSessionItemCommand>, DeleteSessionItemValidator>();
         services.AddScoped<IValidator<QueryPublicSessionsCommand>, QueryPublicSessionsValidator>();
+        services.AddScoped<IValidator<RecordSessionViewCommand>, RecordSessionViewValidator>();
         services.AddScoped<IValidator<GrabSeckillCommand>, GrabSeckillValidator>();
         services.AddScoped<IValidator<QueryGrabResultCommand>, QueryGrabResultValidator>();
         services.AddScoped<IValidator<QuerySeckillReportCommand>, SeckillReportValidator>();
@@ -197,6 +208,16 @@ public static class SeckillValidators
             RuleFor(x => x.SessionId).GreaterThanOrEqualTo(0).WithMessage("场次信息不正确");
             RuleFor(x => x.MerchantId).GreaterThanOrEqualTo(0).WithMessage("商户信息不正确");
             RuleFor(x => x.PlatformId).GreaterThanOrEqualTo(0).WithMessage("平台信息不正确");
+        }
+    }
+
+    /// <summary>场次曝光埋点校验。</summary>
+    private sealed class RecordSessionViewValidator : AbstractValidator<RecordSessionViewCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public RecordSessionViewValidator()
+        {
+            RuleFor(x => x.SessionId).GreaterThan(0).WithMessage("场次 Id 必须为正数");
         }
     }
 

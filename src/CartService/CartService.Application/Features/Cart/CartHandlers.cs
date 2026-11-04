@@ -53,7 +53,9 @@ public sealed class AddToCartHandler : IRequestHandler<AddToCartCommand, ApiResp
             return ApiResults.Ok(new CartItemDto(
                 existing?.Id.ToString() ?? string.Empty, request.SkuId, snapshot.ProductId,
                 snapshot.SkuName, snapshot.SkuSpecText, snapshot.Price, snapshot.OriginalPrice,
-                snapshot.Image, 0, 0m, false), "已从购物车移除");
+                snapshot.Image, 0, 0m, false,
+                false, string.Empty, snapshot.MerchantId.ToString(), string.Empty),
+                "已从购物车移除");
         }
 
         if (target > CartRules.MaxQuantity)
@@ -63,12 +65,28 @@ public sealed class AddToCartHandler : IRequestHandler<AddToCartCommand, ApiResp
                 $"单个商品规格最多购买 {CartRules.MaxQuantity} 件");
         }
 
+        // 购物车条目数上限：与「下单最多 50 行」对齐。不判的话用户能加几百种商品，
+        // 结算页会对每行并发请求商品详情、批量查询把几百个 Id 拼进一个 URL，
+        // 而真正下单时又被 50 行挡住 —— 早一点给明确提示。
+        // 只在新插入一行时判：已在车里的 SKU 继续加数量不受影响。
+        if (existing is null)
+        {
+            var itemCount = await _carts.CountAsync(customerId, ct);
+            if (itemCount >= CartRules.MaxItems)
+            {
+                return ApiResults.Fail<CartItemDto>(
+                    BaseApiResponseCode.BadRequest,
+                    $"购物车最多放 {CartRules.MaxItems} 种商品，请先结算或删除一些再加购");
+            }
+        }
+
         // 快照每次加购都刷新：商品改名 / 改价 / 换图后，购物车要立刻跟上
         if (existing is null)
         {
             var fresh = new CartItem
             {
                 CustomerId = customerId,
+                MerchantId = snapshot.MerchantId,
                 SkuId = request.SkuId,
                 ProductId = snapshot.ProductId,
                 Quantity = target,
@@ -86,6 +104,8 @@ public sealed class AddToCartHandler : IRequestHandler<AddToCartCommand, ApiResp
         }
 
         existing.Quantity = target;
+        // 存量行可能还没有商户归属；加购时用商品服务的最新归属补齐，不拿 0 覆盖已有值
+        if (snapshot.MerchantId > 0) existing.MerchantId = snapshot.MerchantId;
         existing.ProductId = snapshot.ProductId;
         existing.SkuName = snapshot.SkuName;
         existing.SkuSpecText = snapshot.SkuSpecText;
@@ -100,7 +120,8 @@ public sealed class AddToCartHandler : IRequestHandler<AddToCartCommand, ApiResp
     private static CartItemDto ToDto(CartItem a) => new(
         a.Id.ToString(), a.SkuId, a.ProductId, a.SkuName, a.SkuSpecText,
         a.Price, a.OriginalPrice, a.Image, a.Quantity,
-        Math.Round(a.Price * a.Quantity, 2, MidpointRounding.AwayFromZero), a.Checked);
+        Math.Round(a.Price * a.Quantity, 2, MidpointRounding.AwayFromZero), a.Checked,
+        true, string.Empty, a.MerchantId.ToString(), string.Empty);
 }
 
 /// <summary>设置数量处理器（不是累加）。</summary>
@@ -208,14 +229,18 @@ public sealed class QueryCartHandler : IRequestHandler<QueryCartCommand, ApiResp
 {
     private readonly ICartRepository _carts;
     private readonly IProductClient _products;
+    private readonly IMerchantNameClient _merchants;
 
     /// <summary>构造处理器。</summary>
     /// <param name="carts">购物车仓储。</param>
     /// <param name="products">商品客户端，用于刷新价格与可售状态。</param>
-    public QueryCartHandler(ICartRepository carts, IProductClient products)
+    /// <param name="merchants">商户名客户端（购物车按店铺分组展示）。</param>
+    public QueryCartHandler(
+        ICartRepository carts, IProductClient products, IMerchantNameClient merchants)
     {
         _carts = carts;
         _products = products;
+        _merchants = merchants;
     }
 
     /// <summary>执行查询。</summary>
@@ -237,16 +262,20 @@ public sealed class QueryCartHandler : IRequestHandler<QueryCartCommand, ApiResp
             .GetSkuAvailabilityAsync(items.Select(a => a.SkuId).Distinct().ToArray(), ct)
             .ConfigureAwait(false);
 
-        var list = new List<CartItemDto>(items.Count);
+        // 先算出每行的有效商户 Id：存量行的 merchant_id 可能是 0，
+        // 用商品服务的权威定价结果补齐（不拿 0 当真实店铺）。
+        var rows = new List<(CartItem Item, decimal Price, bool Available, string Reason, long MerchantId)>();
         foreach (var item in items)
         {
             var price = item.Price;
             var isAvailable = true;
             var reason = string.Empty;
+            var merchantId = item.MerchantId;
 
             if (availability.TryGetValue(item.SkuId, out var state))
             {
                 price = state.Price;
+                if (merchantId <= 0 && state.MerchantId > 0) merchantId = state.MerchantId;
 
                 // 顺序按「用户最需要知道的那个原因」排：下架 > 停用 > 未过审。
                 if (!state.SpuOnShelf) { isAvailable = false; reason = "商品已下架"; }
@@ -259,16 +288,25 @@ public sealed class QueryCartHandler : IRequestHandler<QueryCartCommand, ApiResp
                 reason = "商品已下架";
             }
 
-            list.Add(new CartItemDto(
-                item.Id.ToString(), item.SkuId, item.ProductId, item.SkuName, item.SkuSpecText,
-                price, item.OriginalPrice, item.Image, item.Quantity,
-                Math.Round(price * item.Quantity, 2, MidpointRounding.AwayFromZero),
-
-                // 不可买的行不参与结算：留着勾选状态的话，用户勾完全部去结算，
-                // 下单接口会以「商品已下架」拒单，页面却显示着一个总价。
-                item.Checked && isAvailable,
-                isAvailable, reason));
+            rows.Add((item, price, isAvailable, reason, merchantId));
         }
+
+        // 一次批量取店铺名；取不到时降级为「店铺」，不影响购物车打开
+        var names = await _merchants
+            .GetNamesAsync(rows.Where(a => a.MerchantId > 0).Select(a => a.MerchantId).Distinct().ToList(), ct)
+            .ConfigureAwait(false);
+
+        var list = rows.Select(r => new CartItemDto(
+            r.Item.Id.ToString(), r.Item.SkuId, r.Item.ProductId, r.Item.SkuName, r.Item.SkuSpecText,
+            r.Price, r.Item.OriginalPrice, r.Item.Image, r.Item.Quantity,
+            Math.Round(r.Price * r.Item.Quantity, 2, MidpointRounding.AwayFromZero),
+
+            // 不可买的行不参与结算：留着勾选状态的话，用户勾完全部去结算，
+            // 下单接口会以「商品已下架」拒单，页面却显示着一个总价。
+            r.Item.Checked && r.Available,
+            r.Available, r.Reason,
+            r.MerchantId.ToString(),
+            names.TryGetValue(r.MerchantId, out var name) ? name : "店铺")).ToList();
 
         return ApiResults.Ok(list);
     }

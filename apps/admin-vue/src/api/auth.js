@@ -20,11 +20,29 @@ export async function login(username, password) {
   form.set('username', username);
   form.set('password', password);
 
-  const response = await fetch('/gateway/auth/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: form.toString(),
-  });
+  // 与 request.js 同一口径：登录请求也要有超时。
+  // 没有超时的话，连接被挂住时登录按钮会一直转圈、什么都不提示，
+  // 用户只能刷新 —— 而「登录为什么没反应」没有任何可判断的信息。
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 15_000);
+
+  let response;
+  try {
+    response = await fetch('/gateway/auth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw new Error(
+      error?.name === 'AbortError'
+        ? '登录请求超时，请重试'
+        : '网络连接失败，请检查后端服务是否已启动',
+    );
+  } finally {
+    window.clearTimeout(timer);
+  }
 
   const payload = await response.json().catch(() => null);
 

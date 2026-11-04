@@ -33,6 +33,15 @@ public sealed class EvaluateController : ControllerBase
         [FromBody] QuerySpuEvaluatesCommand command, CancellationToken ct)
         => _mediator.Send(command, ct);
 
+    /// <summary>店铺公开评价列表（P35）。</summary>
+    /// <param name="command">商户、平台与分页条件。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>评价分页与店铺评分。</returns>
+    [HttpPost("Merchant")]
+    public Task<ApiResponse<EvaluatePageResult>> Merchant(
+        [FromBody] QueryMerchantEvaluatesCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
     /// <summary>我的评价列表。</summary>
     /// <param name="command">命令。</param>
     /// <param name="ct">取消令牌。</param>

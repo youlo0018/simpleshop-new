@@ -99,9 +99,9 @@ public sealed class QuoteOrderDiscountHandler
 
         var result = PromotionCalculator.Calculate(lines, activities, coupons, priority, nowUtc);
 
-        await RecordActivityParticipationAsync(request, activities, lines, result, nowUtc, ct)
+        await RecordActivityParticipationAsync(request, activities, result, ct)
             .ConfigureAwait(false);
-        await RecordGiftPromiseAsync(request, activities, lines, result, nowUtc, ct).ConfigureAwait(false);
+        await RecordGiftPromiseAsync(request, activities, result, nowUtc, ct).ConfigureAwait(false);
 
         var perLine = result.Lines
             .Select(a => new QuoteOrderLineResult(
@@ -115,9 +115,7 @@ public sealed class QuoteOrderDiscountHandler
     /// <summary>记一条活动参与记录（活动报表与下钻的数据源）。</summary>
     /// <param name="request">试算命令，<c>OrderNo</c> 为空表示结算试算，不记。</param>
     /// <param name="activities">候选活动。</param>
-    /// <param name="lines">订单行。</param>
-    /// <param name="result">优惠引擎的整单结论。</param>
-    /// <param name="nowUtc">下单时刻（UTC）。</param>
+    /// <param name="result">优惠引擎的整单结论，含逐活动命中汇总。</param>
     /// <param name="ct">取消令牌。</param>
     /// <remarks>
     /// <para>BUSINESS.md 17 要求活动报表给「参与订单数 / 参与金额 / 折扣总额」并支持下钻订单明细，
@@ -129,40 +127,37 @@ public sealed class QuoteOrderDiscountHandler
     private async Task RecordActivityParticipationAsync(
         QuoteOrderDiscountCommand request,
         IReadOnlyList<PromotionActivity> activities,
-        IReadOnlyList<PromotionLine> lines,
         FinalPriceResult result,
-        DateTime nowUtc,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.OrderNo)) return;
         if (request.CustomerId <= 0) return;
 
-        // 被券压住的行不算参与活动（券与活动互斥，BUSINESS.md 11.2）
-        if (!result.UsedActivity) return;
-
-        var hit = PromotionCalculator.PickBest(activities, lines, nowUtc);
-        if (hit.ActivityId == 0) return;
-
-        await _promotions.RecordParticipationAsync(new MarketingActivityRecord
+        // 逐行贪心下同一单可能命中多个活动（A 行满减、B 行满折），
+        // 每个活动各记一条参与记录 —— 报表按下钻时两行都查得到。
+        // 唯一索引是 (order_no, activity_id)，重复试算不会记两遍。
+        foreach (var hit in result.ActivityHits)
         {
-            OrderNo = request.OrderNo,
-            CustomerId = request.CustomerId,
-            ActivityId = hit.ActivityId,
-            ActivityName = hit.ActivityName,
-            // 平台取**订单的**平台（订单服务按商品归属传过来）：活动可以是平台 0 的全场活动，
-            // 但报表要能按订单所属平台筛。
-            PlatformId = request.PlatformId,
-            MerchantId = activities.FirstOrDefault(a => a.Id == hit.ActivityId)?.MerchantId ?? 0,
-            DiscountAmount = PromotionCalculator.Round2(result.ActivityDiscountTotal)
-        }, ct).ConfigureAwait(false);
+            await _promotions.RecordParticipationAsync(new MarketingActivityRecord
+            {
+                OrderNo = request.OrderNo,
+                CustomerId = request.CustomerId,
+                ActivityId = hit.ActivityId,
+                ActivityName = hit.ActivityName,
+                // 平台取**订单的**平台（订单服务按商品归属传过来）：活动可以是平台 0 的全场活动，
+                // 但报表要能按订单所属平台筛。
+                PlatformId = request.PlatformId,
+                MerchantId = activities.FirstOrDefault(a => a.Id == hit.ActivityId)?.MerchantId ?? 0,
+                DiscountAmount = PromotionCalculator.Round2(hit.DiscountAmount)
+            }, ct).ConfigureAwait(false);
+        }
     }
 
     /// <summary>把本单命中的满赠落成发放承诺。</summary>
     /// <param name="request">试算命令，<c>OrderNo</c> 为空表示结算试算，不写承诺。</param>
     /// <param name="activities">候选活动。</param>
-    /// <param name="lines">订单行。</param>
     /// <param name="result">优惠引擎的整单结论。</param>
-    /// <param name="nowUtc">下单时刻（UTC）。</param>
+    /// <param name="nowUtc">下单时刻（UTC），承诺记录的创建时间。</param>
     /// <param name="ct">取消令牌。</param>
     /// <remarks>
     /// 只有真实下单（<c>OrderNo</c> 非空）才写：结算页每翻一页都会试算一次，
@@ -171,7 +166,6 @@ public sealed class QuoteOrderDiscountHandler
     private async Task RecordGiftPromiseAsync(
         QuoteOrderDiscountCommand request,
         IReadOnlyList<PromotionActivity> activities,
-        IReadOnlyList<PromotionLine> lines,
         FinalPriceResult result,
         DateTime nowUtc,
         CancellationToken ct)
@@ -179,22 +173,31 @@ public sealed class QuoteOrderDiscountHandler
         if (string.IsNullOrWhiteSpace(request.OrderNo)) return;
         if (request.CustomerId <= 0) return;
 
-        // 满赠命中时，优惠额是 0，角标来源会是 gift；用同一份结论判定，不另算一遍
-        var giftHit = result.Lines.Any(a => a.Source == DiscountSources.Gift);
-        var gift = GiftGrantPlanner.FindHitGiftActivity(activities, lines, nowUtc, giftHit);
-        if (gift is null) return;
+        // 命中哪些满赠由优惠引擎的逐行结论给出，这里只把实体查回来，不另算一遍。
+        // 逐行贪心下不同行可能命中不同的满赠活动，所以按命中的活动逐个承诺
+        // （gift_grant 的唯一索引是 (order_no, source_type, source_id)，一条活动一条承诺）。
+        var grants = new List<GiftGrantRequest>();
 
-        var template = await _coupons.GetTemplateAsync(gift.GiftTemplateId, ct).ConfigureAwait(false);
-        if (!GiftGrantPlanner.CanPromise(template, gift.GiftQuantity))
+        foreach (var hit in result.ActivityHits)
         {
-            // 池子不够 / 模板已被删：承诺不了就别承诺，免得付完钱发不出券
-            return;
+            var gift = GiftGrantPlanner.FindHitGiftActivity(activities, hit.ActivityId);
+            if (gift is null || gift.ActivityType != ActivityTypes.Gift) continue;
+
+            var template = await _coupons.GetTemplateAsync(gift.GiftTemplateId, ct).ConfigureAwait(false);
+            if (!GiftGrantPlanner.CanPromise(template, gift.GiftQuantity))
+            {
+                // 池子不够 / 模板已被删：承诺不了就别承诺，免得付完钱发不出券
+                continue;
+            }
+
+            grants.Add(new GiftGrantRequest(
+                GiftGrantSources.Activity, gift.Id, gift.GiftTemplateId, gift.GiftQuantity));
         }
 
+        if (grants.Count == 0) return;
+
         await _coupons.RecordGiftGrantsAsync(
-            request.OrderNo, request.CustomerId,
-            [new GiftGrantRequest(GiftGrantSources.Activity, gift.Id, gift.GiftTemplateId, gift.GiftQuantity)],
-            nowUtc, ct).ConfigureAwait(false);
+            request.OrderNo, request.CustomerId, grants, nowUtc, ct).ConfigureAwait(false);
     }
 }
 

@@ -134,6 +134,10 @@ public static class CouponCalculator
         return best is not null;
     }
 
+    /// <summary>按券 Id 在候选集合里找券实体（比较「最临期」时用）。</summary>
+    /// <param name="all">候选券。</param>
+    /// <param name="id">券 Id。</param>
+    /// <returns>命中的券；找不到返回 null。</returns>
     private static Entities.UserCoupon? FindCoupon(IEnumerable<Entities.UserCoupon> all, long id)
         => all.FirstOrDefault(a => a.Id == id);
 
@@ -247,6 +251,9 @@ public static class CouponCalculator
         }
     }
 
+    /// <summary>订单行金额求和（不四舍五入，调用方按需 Round2）。</summary>
+    /// <param name="lines">订单行。</param>
+    /// <returns>金额合计。</returns>
     private static decimal Sum(IReadOnlyList<CouponOrderLine> lines)
     {
         decimal total = 0m;
@@ -254,6 +261,12 @@ public static class CouponCalculator
         return total;
     }
 
+    /// <summary>判断券是否达到门槛，并给出未达时的中文原因。</summary>
+    /// <param name="coupon">用户券（用快照字段判门槛）。</param>
+    /// <param name="baseAmount">门槛判定基数：券适用行金额合计。</param>
+    /// <param name="reason">未达门槛的原因；达到时为空串。</param>
+    /// <returns>达到门槛返回 true。</returns>
+    /// <remarks>门槛 0 表示无门槛，恒为 true。</remarks>
     private static bool ReachedThreshold(Entities.UserCoupon coupon, decimal baseAmount, out string reason)
     {
         // 门槛 0 = 无门槛

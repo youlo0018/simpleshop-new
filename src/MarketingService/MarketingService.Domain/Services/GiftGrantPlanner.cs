@@ -11,31 +11,22 @@ namespace MarketingService.Domain.Services;
 /// </remarks>
 public static class GiftGrantPlanner
 {
-    /// <summary>找出本单真正命中的那个满赠活动。</summary>
+    /// <summary>把优惠引擎判定命中的满赠活动实体找回来。</summary>
     /// <param name="activities">候选活动（查询层已按平台与场次滤过）。</param>
-    /// <param name="lines">订单行。</param>
-    /// <param name="nowUtc">下单时刻（UTC）。</param>
-    /// <param name="giftHit">优惠引擎算出来的结论：本单是否命中了满赠。</param>
+    /// <param name="giftActivityId">
+    /// 优惠引擎给出的满赠活动 Id（<see cref="PromotionCalculator.Calculate"/> 的
+    /// <c>GiftActivityId</c>）；0 表示没命中。
+    /// </param>
     /// <returns>命中的满赠活动；没有则返回 null。</returns>
     /// <remarks>
-    /// <b>为什么以优惠引擎的结论为准</b>：满赠只在「该行没有任何折扣可用」时才命中
-    /// （BUSINESS.md 11.2），这件事只有算过整单优惠的人知道。
-    /// 这里再用同一份 <see cref="PromotionCalculator.PickBest"/> 把活动实体找回来——
-    /// 判定规则只有一份，不会出现「引擎说命中、发券说没命中」。
+    /// <b>为什么由引擎给出活动 Id，而不是这里再判一次</b>：满赠只在「该行没有任何折扣可用」
+    /// 时才命中（BUSINESS.md 11.2），而「哪一行用了哪个活动 / 券」是逐行贪心的结论，
+    /// 只有算过整单优惠的人知道。这里再算一遍就会出现「引擎说命中满减、发券说命中满赠」
+    /// 这种两套判定漂移。所以判定只做一次，这个方法只负责把实体查出来。
     /// </remarks>
     public static PromotionActivity? FindHitGiftActivity(
-        IReadOnlyList<PromotionActivity> activities,
-        IReadOnlyList<PromotionLine> lines,
-        DateTime nowUtc,
-        bool giftHit)
-    {
-        if (!giftHit || activities.Count == 0 || lines.Count == 0) return null;
-
-        var quote = PromotionCalculator.PickBest(activities, lines, nowUtc);
-        if (quote.ActivityId == 0 || !quote.IsGift) return null;
-
-        return activities.FirstOrDefault(a => a.Id == quote.ActivityId);
-    }
+        IReadOnlyList<PromotionActivity> activities, long giftActivityId)
+        => giftActivityId <= 0 ? null : activities.FirstOrDefault(a => a.Id == giftActivityId);
 
     /// <summary>这张赠送模板还能不能再承诺一次。</summary>
     /// <param name="template">赠送的券模板；查不到（已删除）时为 null。</param>

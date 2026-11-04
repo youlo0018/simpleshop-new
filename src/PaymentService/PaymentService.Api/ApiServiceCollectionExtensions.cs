@@ -1,3 +1,4 @@
+using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.MediatR;
 using FluentValidation;
 using MediatR;
@@ -21,6 +22,8 @@ public static class ApiServiceCollectionExtensions
     public static IServiceCollection AddAppServices(
         this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInternalTokenPropagation();
+
         var appAssembly = typeof(PaymentValidators).Assembly;
 
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(appAssembly));
@@ -57,7 +60,7 @@ public static class ApiServiceCollectionExtensions
             client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
             // 名称只是展示字段：超时给短一点，取不到就回落显示 Id，不拖慢详情
             client.Timeout = TimeSpan.FromSeconds(5);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 
     /// <summary>注册订单端口：支付与退款都要按订单的权威数据判断。</summary>
@@ -77,6 +80,6 @@ public static class ApiServiceCollectionExtensions
             client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
             // 支付收尾会触发库存确认 / 积分实扣 / 券核销，比普通查询慢
             client.Timeout = TimeSpan.FromSeconds(30);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 }

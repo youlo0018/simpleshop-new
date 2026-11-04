@@ -1,35 +1,32 @@
 using Collaboration.Domain.Common;
-using FreeSql;
 using MediatR;
-using PermissionEntity = PermissionService.Domain.Entities.Permission;
+using PermissionService.Domain.IRepository;
 
 namespace PermissionService.Application.Features.Internal;
 
 /// <summary>网关 RBAC 映射查询处理器。</summary>
 public sealed class GetRouteMapHandler : IRequestHandler<GetRouteMapCommand, ApiResponse<List<RouteMapEntry>>>
 {
-    private readonly IFreeSql _freeSql;
+    private readonly IPermissionRepository _permissions;
 
     /// <summary>构造处理器。</summary>
-    /// <param name="freeSql">FreeSql 实例。全局过滤已在注册时装好（软删 / 租户）。</param>
-    public GetRouteMapHandler(IFreeSql freeSql) => _freeSql = freeSql;
+    /// <param name="permissions">权限点仓储。全局过滤已在注册时装好（软删 / 租户）。</param>
+    public GetRouteMapHandler(IPermissionRepository permissions) => _permissions = permissions;
 
     /// <summary>执行查询。</summary>
     /// <param name="request">查询命令。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>全部启用且绑定了路径的权限点映射。</returns>
     /// <remarks>
-    /// 这里必须给 Permission 加类型别名：当前命名空间是 ...Features.Internal，
-    /// 而 using PermissionService.Domain.Entities 会把 `Permission` 带进来——
-    /// 但 `Permission` 同时还是一个命名空间（Features/Permission），
-    /// 编译器会把裸写的 Permission 当成命名空间，直接报 CS0118。
-    /// 这是 CODING_STANDARD 里记的第 1 号陷阱，已经踩过多次。
+    /// 查询走仓储（Application 层不得依赖 IFreeSql，CODING_STANDARD 1）：
+    /// <see cref="IPermissionRepository.QueryAllAsync"/> 带软删 / 租户全局过滤，
+    /// 与权限树用的是同一份可见性口径。
     /// </remarks>
     public async Task<ApiResponse<List<RouteMapEntry>>> Handle(GetRouteMapCommand request, CancellationToken ct)
     {
-        var rows = await _freeSql.Select<PermissionEntity>()
-            .Where(a => a.Status == 1 && a.ApiPath != null && a.ApiPath != string.Empty)
-            .ToListAsync(ct);
+        var rows = (await _permissions.QueryAllAsync(onlyEnabled: true, ct).ConfigureAwait(false))
+            .Where(a => !string.IsNullOrEmpty(a.ApiPath))
+            .ToList();
 
         // 一个权限点可以绑**多条**路径（BUSINESS.md 5.4「ApiPath（绑定的 /gateway/* 路径，可多个）」），
         // 用逗号分隔存。这里必须展开成「一条路径一条映射」：

@@ -46,12 +46,14 @@ public sealed class SeckillRepository : ISeckillRepository
 
     /// <inheritdoc />
     public async Task<List<SeckillSession>> ListPublicSessionsAsync(
-        DateTime nowUtc, long platformId, CancellationToken ct = default)
+        DateTime nowUtc, long platformId, int limit = 20, CancellationToken ct = default)
         => await _db.Select<SeckillSession>()
             .Where(a => (a.Status == SeckillSessionStatuses.NotStarted || a.Status == SeckillSessionStatuses.Running)
                         && a.EndTime > nowUtc
                         && (platformId <= 0 || a.PlatformId == platformId))
             .OrderBy(a => a.StartTime).OrderBy(a => a.Id)
+            // 热门路径必须有上限：场次表会随历史累积，一次全拉回来是慢查询的起点
+            .Limit(Math.Clamp(limit, 1, 100))
             .ToListAsync(ct);
 
     /// <inheritdoc />
@@ -61,6 +63,23 @@ public sealed class SeckillRepository : ISeckillRepository
             .Where(a => a.Status == SeckillSessionStatuses.Running && a.EndTime <= nowUtc)
             // 按结束时间从早到晚：先处理「欠得最久」的，
             // 免得某一轮 limit 用光后，早该结束的场次被一直往后排。
+            .OrderBy(a => a.EndTime).OrderBy(a => a.Id)
+            .Limit(limit)
+            .ToListAsync(ct);
+
+    /// <inheritdoc />
+    public async Task<List<SeckillSession>> ListPendingStockReturnSessionsAsync(
+        int limit, CancellationToken ct = default)
+        => await _db.Select<SeckillSession>()
+            .Where(a => a.StockTransferred
+                        && (a.Status == SeckillSessionStatuses.Ended
+                            || a.Status == SeckillSessionStatuses.Cancelled
+                            // 发布时**部分划出**后中止在场次上的状态仍是「未开始」。
+                            // 过了结束时间就不可能再发布，必须由这里把已划出的那部分还回去，
+                            // 否则那些货会永久滞留在秒杀池（实测 50→48 就是这么来的）。
+                            || (a.Status == SeckillSessionStatuses.NotStarted
+                                && a.EndTime <= DateTime.UtcNow)))
+            // 先处理结束得早的：欠得最久的库存先还回去
             .OrderBy(a => a.EndTime).OrderBy(a => a.Id)
             .Limit(limit)
             .ToListAsync(ct);
@@ -146,7 +165,9 @@ public sealed class SeckillRepository : ISeckillRepository
                 // GMV 要问订单服务（金额在订单库），仓储不跨服务调用：
                 // 这里先给 0，由 SeckillReportHandler 用 with 填上真实金额。
                 0m,
-                orderNos));
+                orderNos,
+                // PV 在日志服务的 ES 里，同样由 SeckillReportHandler 填入。
+                0));
         }
 
         return result;
@@ -210,6 +231,20 @@ public sealed class SeckillRepository : ISeckillRepository
             .Where(a => a.SessionId == sessionId)
             .OrderBy(a => a.SortOrder).OrderBy(a => a.Id)
             .ToListAsync(ct);
+
+    /// <inheritdoc />
+    public async Task<List<SeckillItem>> ListItemsBySessionIdsAsync(
+        IReadOnlyCollection<long> sessionIds, CancellationToken ct = default)
+    {
+        if (sessionIds.Count == 0) return [];
+
+        var ids = sessionIds.Distinct().ToArray();
+
+        return await _db.Select<SeckillItem>()
+            .Where(a => ids.Contains(a.SessionId))
+            .OrderBy(a => a.SortOrder).OrderBy(a => a.Id)
+            .ToListAsync(ct);
+    }
 
     /// <inheritdoc />
     public async Task<List<SeckillItem>> ListItemsBySkuAsync(long skuId, CancellationToken ct = default)
@@ -350,6 +385,8 @@ public sealed class SeckillRepository : ISeckillRepository
             })
             .ExecuteAffrowsAsync(ct);
 
+    /// <summary>写入创建人 / 操作人快照（来自租户上下文）。</summary>
+    /// <param name="entity">待写入的后台实体。</param>
     private static void ApplyAudit(AdminEntityBase entity)
     {
         var ctx = TenantContextHolder.Current;

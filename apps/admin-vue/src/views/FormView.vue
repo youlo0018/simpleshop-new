@@ -60,7 +60,7 @@
               v-model="model[f.field]"
               type="number"
               class="form__control"
-              :placeholder="f.placeholder"
+              :placeholder="f.placeholder || '请输入'"
               :disabled="isLocked(f)"
             />
 
@@ -132,6 +132,7 @@ import { ElMessage } from 'element-plus';
 import request from '@/api/request';
 import { optionSources } from '@/router/form-configs';
 import { toOptions } from '@/utils/options';
+import { readAdminPageState } from '@/utils/navigation';
 
 const props = defineProps<{ config: any; id?: string }>();
 const route = useRoute();
@@ -255,7 +256,8 @@ async function load() {
     // 优先用它：列表兜底只取第一页，券模板这种跨好几页的列表，
     // 从第 2 页点编辑会捞不到那一行（提示「未找到该记录」+ 表单全空）。
     // 直接用路由里带过来的行，既省一次请求，也不受分页影响。
-    const seeded = (history.state as any)?.row;
+    const transferred = readAdminPageState(route.query._nav) as { row?: any } | undefined;
+    const seeded = transferred?.row ?? (history.state as any)?.row;
     if (seeded && String(seeded[config.value.idField || 'id'] ?? seeded.id ?? '') === String(entityId.value)) {
       loaded.value = seeded;
       fill(seeded);
@@ -363,11 +365,20 @@ function validate() {
   for (const k of Object.keys(errors)) delete errors[k];
 
   for (const f of visibleFields.value) {
+    // 编辑态被锁定的字段（readonlyInEdit）用户改不了：报错也没法修，
+    // 而且它的值来自后端，本来就可能不满足前端规则（例如归属平台是 0）。
+    if (isLocked(f)) continue;
+
     const raw = model[f.field];
     const value = Array.isArray(raw) ? raw.join(',') : raw;
     const empty = value === '' || value === null || value === undefined;
 
-    if (f.required && empty) {
+    // required 允许写成函数：同一张表单里「必填」会随另一个字段变化 ——
+    // 满减必须填优惠金额、满折必须填折扣率、满赠必须选券模板。
+    // 写成 `required: (m) => ...` 比给每个类型配一份字段表更好维护，
+    // 也和后端 Validator 里的 When(...) 规则一一对应。
+    const required = typeof f.required === 'function' ? f.required(model) : f.required;
+    if (required && empty) {
       errors[f.field] = `${f.label}不能为空`;
       continue;
     }
@@ -383,6 +394,23 @@ function validate() {
     }
     if (f.max != null && Number(value) > f.max) {
       errors[f.field] = `${f.label}不能大于 ${f.max}`;
+      continue;
+    }
+    // 长度上限与后端的 MaximumLength 一一对应（Logo 512、备注 512、公告 500……）。
+    // 不拦的话用户写完一屏文字才被后端 400 顶回来，而那时内容已经丢了。
+    if (f.maxLength != null && String(value).length > f.maxLength) {
+      errors[f.field] = `${f.label}不能超过 ${f.maxLength} 个字符`;
+      continue;
+    }
+    // 时间先后：后端的 GreaterThan(x => x.StartTime) 在提交前就拦下来，
+    // 否则用户填反了要等一次往返才知道（券活动 / 活动 / 场次都有这条）。
+    if (f.afterField && model[f.afterField]) {
+      const other = (config.value.fields || []).find((x: any) => x.field === f.afterField);
+      const self = new Date(String(value)).getTime();
+      const otherTime = new Date(String(model[f.afterField])).getTime();
+      if (!Number.isNaN(self) && !Number.isNaN(otherTime) && self <= otherTime) {
+        errors[f.field] = `${f.label}必须晚于${other?.label || '前一个时间'}`;
+      }
     }
   }
 
@@ -419,6 +447,12 @@ async function submit() {
       // long / int / long[]（本文件里没有任何字符串取值的下拉）。
       // 把 `''` 原样发出去同样是整单绑定失败，所以空值统一收敛成 0 / []。
       if (f.type === 'select' && v === '') v = f.multiple ? [] : 0;
+      // 数字框留空时模型是 `''`：原样发出去会让**整个命令**绑定失败
+      // （实测 400：{"command":["不能为空"],"$.thresholdAmount":["格式不正确"]}），
+      // 而每个数字字段在命令里都有默认值（门槛 0 = 无门槛、折扣率 0 = 待填、张数 1 等）。
+      // 省略字段 = 用命令默认值，语义与「没填」一致；必填的数字字段由上面的
+      // validate() 按 required 拦下，不会走到这里。
+      if (f.type === 'number' && (v === '' || v === null || v === undefined)) continue;
       body[f.field] = v;
     }
     if (isEdit.value) body[config.value.idField || 'id'] = String(entityId.value);

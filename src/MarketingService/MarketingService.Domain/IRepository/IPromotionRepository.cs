@@ -69,6 +69,23 @@ public interface IPromotionRepository
     /// </remarks>
     Task<int> GetPriorityAsync(long platformId, CancellationToken ct = default);
 
+    /// <summary>读某平台的营销配置行（后台配置页展示用）。</summary>
+    /// <param name="platformId">平台 Id。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>配置行；没配过返回 null（调用方回默认值）。</returns>
+    Task<MarketingConfig?> GetConfigAsync(long platformId, CancellationToken ct = default);
+
+    /// <summary>保存某平台的优惠优先级（没有配置行时插入）。</summary>
+    /// <param name="platformId">平台 Id。</param>
+    /// <param name="priority">优先级码，见 <see cref="MarketingPriorities"/>。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>异步任务。</returns>
+    /// <remarks>
+    /// 用「查 + 插入 / 条件更新」而不是 Upsert：Upsert 依赖数据库方言，
+    /// 且本项目已确认 <c>Update&lt;T&gt;(entity)</c> 会生成空 SET 子句（见 CrudRepository 的 P0 修复）。
+    /// </remarks>
+    Task SavePriorityAsync(long platformId, int priority, CancellationToken ct = default);
+
     /// <summary>软删活动。</summary>
     /// <param name="activityId">活动 Id。</param>
     /// <param name="ct">取消令牌。</param>

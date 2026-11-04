@@ -47,6 +47,10 @@ public sealed class EarnPointsHandler : IRequestHandler<EarnPointsCommand, ApiRe
         return ApiResults.Ok(ToBalance(request.CustomerId, outcome), message);
     }
 
+    /// <summary>把仓储结果转成余额视图（累计发放 / 消耗不在仓储结果里，统一填 0）。</summary>
+    /// <param name="customerId">客户 Id。</param>
+    /// <param name="o">仓储结果。</param>
+    /// <returns>余额视图。</returns>
     internal static PointBalance ToBalance(long customerId, PointOutcome o)
         => new(customerId, o.Available, o.Frozen, 0, 0, o.AlreadyApplied);
 }
@@ -213,7 +217,7 @@ public sealed class RefundPointsHandler : IRequestHandler<RefundPointsCommand, A
     public async Task<ApiResponse<PointBalance>> Handle(RefundPointsCommand request, CancellationToken ct)
     {
         var outcome = await _points.RefundAsync(
-            request.CustomerId, request.BizNo, request.RefundRatio, request.Remark, ct);
+            request.CustomerId, request.BizNo, request.RefundNo, request.RefundRatio, request.Remark, ct);
 
         if (!outcome.Succeeded)
         {
@@ -267,10 +271,16 @@ public sealed class SignInPointsHandler : IRequestHandler<SignInPointsCommand, A
 public sealed class QueryPointAccountHandler : IRequestHandler<QueryPointAccountCommand, ApiResponse<PointBalance>>
 {
     private readonly IPointRepository _points;
+    private readonly IPointRuleProvider _rules;
 
     /// <summary>构造处理器。</summary>
     /// <param name="points">积分仓储。</param>
-    public QueryPointAccountHandler(IPointRepository points) => _points = points;
+    /// <param name="rules">积分规则提供者。</param>
+    public QueryPointAccountHandler(IPointRepository points, IPointRuleProvider rules)
+    {
+        _points = points;
+        _rules = rules;
+    }
 
     /// <summary>执行查询。</summary>
     /// <param name="request">查询命令。</param>
@@ -283,13 +293,51 @@ public sealed class QueryPointAccountHandler : IRequestHandler<QueryPointAccount
     public async Task<ApiResponse<PointBalance>> Handle(QueryPointAccountCommand request, CancellationToken ct)
     {
         var customerId = CustomerScope.Require(request.CustomerId);
-        var account = await _points.GetAccountAsync(customerId, ct);
+        var account = await _points.GetAccountAsync(customerId, ct).ConfigureAwait(false);
+        var rules = await _rules.GetAsync(ct).ConfigureAwait(false);
+        var now = DateTime.UtcNow;
+        var expiringLots = await _points
+            .ListExpiringLotsAsync(customerId, now, now.AddDays(30), ct)
+            .ConfigureAwait(false);
+
+        var today = TimeZoneHelper.GetShanghaiToday();
+        var lastSignDate = account?.SignLastDate is null
+            ? (DateOnly?)null
+            : DateOnly.FromDateTime(account.SignLastDate.Value);
+        var signedToday = lastSignDate == today;
+        var streak = account?.SignStreak ?? 0;
+        var effectiveStreak = signedToday
+            ? streak
+            : lastSignDate == today.AddDays(-1) ? streak + 1 : 1;
+        var rewardIndex = rules.SignInRewards.Count == 0
+            ? -1
+            : (Math.Max(1, effectiveStreak) - 1) % rules.SignInRewards.Count;
+        var nextReward = rewardIndex >= 0 ? rules.SignInRewards[rewardIndex] : 0;
 
         var balance = account is null
-            ? new PointBalance(customerId, 0, 0, 0, 0, false)
+            ? new PointBalance(
+                customerId, 0, 0, 0, 0, false,
+                rules.PointsPerYuan,
+                expiringLots.Sum(a => a.Remaining),
+                expiringLots.FirstOrDefault()?.ExpireAt.ToString("yyyy-MM-dd") ?? "",
+                streak,
+                signedToday,
+                rules.SignInRewards,
+                nextReward)
             : new PointBalance(
-                account.CustomerId, account.Available, account.Frozen,
-                account.TotalEarned, account.TotalUsed, false);
+                account.CustomerId,
+                account.Available,
+                account.Frozen,
+                account.TotalEarned,
+                account.TotalUsed,
+                false,
+                rules.PointsPerYuan,
+                expiringLots.Sum(a => a.Remaining),
+                expiringLots.FirstOrDefault()?.ExpireAt.ToString("yyyy-MM-dd") ?? "",
+                streak,
+                signedToday,
+                rules.SignInRewards,
+                nextReward);
 
         return ApiResults.Ok(balance);
     }

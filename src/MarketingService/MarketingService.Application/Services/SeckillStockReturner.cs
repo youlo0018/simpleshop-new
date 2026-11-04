@@ -55,6 +55,31 @@ public sealed class SeckillStockReturner
 
         foreach (var item in items)
         {
+            // 🔴 先确认这批货**真的划过**：seckill_release 是「可用 += qty」的无条件加法，
+            // 对从未划出过库存的 SKU 释放会凭空多出一批货。
+            // 「发布时部分划出、随后中止」的场次正是这种形状（有的划过、有的没划过），
+            // 而 StockTransferred 只表达「有货在外面」，分不出是哪一个 SKU。
+            var reserveBizNo = SeckillBizNos.Reserve(session.Id, item.SkuId);
+            try
+            {
+                if (!await _inventory
+                        .HasFlowAsync(item.SkuId, reserveBizNo, IInventoryPort.ReserveAction, ct)
+                        .ConfigureAwait(false))
+                {
+                    _logger.LogInformation(
+                        "场次 {SessionId} 的 SKU {SkuId} 没有划出流水，跳过回补（避免凭空多货）",
+                        session.Id, item.SkuId);
+                    continue;
+                }
+            }
+            catch (Exception ex)
+            {
+                // 查不到就不知道该不该还。宁可留着标志下轮重试，也不能猜。
+                _logger.LogError(ex, "场次 {SessionId} 回补前查划出流水失败：SKU {SkuId}", session.Id, item.SkuId);
+                failed.Add($"{item.SkuId}（划出流水查询失败）");
+                continue;
+            }
+
             // 🔴 回补量取「库里的未售数」与「Redis 余量」的**较小者**。
             //
             // sold_count 是在**下单成功之后**才 +1 的，所以一个「预扣成功、还在下单」
@@ -83,7 +108,7 @@ public sealed class SeckillStockReturner
 
             // 业务单号带 release 后缀：与划出时不同，
             // 所以库存侧不会把「回补」当成「又一次划出」而直接判成重复。
-            var bizNo = $"SKL-RELEASE-{session.Id}-{item.SkuId}";
+            var bizNo = SeckillBizNos.Release(session.Id, item.SkuId);
             try
             {
                 var ok = await _inventory.ReleaseAsync(item.SkuId, remaining, bizNo, ct)
@@ -104,6 +129,21 @@ public sealed class SeckillStockReturner
             }
         }
 
+        if (failed.Count > 0)
+        {
+            // 🔴 有失败就**不能**清余量键、也不能清 StockTransferred：
+            // 两者都是重试的依据 —— 余量键决定「还能还多少」（min(库里未售数, Redis 余量)），
+            // 标志位是定时任务找到这张场次的唯一线索。原实现无条件清掉，
+            // 而结束状态已先落库、再调结束又直接返回「已是目标状态」，
+            // 一次库存服务抖动 = 剩余秒杀库存永久消失。
+            // 保留后由 ScheduledService 的「回补重试」每轮继续处理，库存侧按 bizNo 幂等，不会还两遍。
+            _logger.LogError(
+                "场次 {SessionId} 有 {Count} 个商品回补失败，保留标志等待重试：{Failed}",
+                session.Id, failed.Count, string.Join("、", failed));
+
+            return new SeckillReturnOutcome(released, failed, true);
+        }
+
         // 清掉余量键：场次已经结束，这个数字不能再被谁读到。
         // 不清的话，下次重建同名场次时 KeyExists 会判定「已初始化」，
         // 余量就停留在上一场的旧值上——表现为「新场次一开始就说抢完了」。
@@ -113,13 +153,6 @@ public sealed class SeckillStockReturner
         }
 
         await _seckill.SetStockTransferredAsync(session.Id, false, ct).ConfigureAwait(false);
-
-        if (failed.Count > 0)
-        {
-            _logger.LogError(
-                "场次 {SessionId} 有 {Count} 个商品回补失败，需人工核对：{Failed}",
-                session.Id, failed.Count, string.Join("、", failed));
-        }
 
         return new SeckillReturnOutcome(released, failed, true);
     }

@@ -67,6 +67,16 @@ ALTER TABLE "order" ADD COLUMN IF NOT EXISTS ship_remark varchar(512) NOT NULL D
 -- 都判断「还有余额」，然后一起把订单退成超额。
 ALTER TABLE "order" ADD COLUMN IF NOT EXISTS refunded_amount numeric(18,2) NOT NULL DEFAULT 0;
 
+-- 实付 0 元订单的占用结清标志：0 未结清 / 1 已结清。
+-- 0 元单创建时直接进 20，但库存 / 积分 / 券的占用还要当场结清；
+-- 结清失败时这个标志留 0，ScheduledService 的补偿任务据此重试。
+ALTER TABLE "order" ADD COLUMN IF NOT EXISTS settle_status int NOT NULL DEFAULT 0;
+
+-- 补偿任务的扫描索引：只看「0 元 + 未结清」这一小撮，别让每轮扫全表
+CREATE INDEX IF NOT EXISTS idx_order_zero_pay_pending
+    ON "order" (created_at)
+    WHERE settle_status = 0 AND payable_amount = 0 AND is_deleted = false;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uk_order_no ON "order" (order_no) WHERE is_deleted = false;
 
 -- 🔴 幂等键的唯一约束：同一个客户 + 同一个幂等键只允许一张单。

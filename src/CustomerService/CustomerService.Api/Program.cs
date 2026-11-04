@@ -2,6 +2,7 @@ using Collaboration.Domain.Configuration;
 using Collaboration.Web;
 using Collaboration.Domain.Infrastructure;
 using CustomerService.Api;
+using CustomerService.Application.Services;
 using CustomerService.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -37,6 +38,10 @@ SnowflakeId.Configure(workerId);
 // S6~S12：注册中间件与业务，最后 Build + Run
 builder.Services.AddSingleton<IConnectionMultiplexer>(redis);
 builder.Services.AddSingleton(_ => redis.GetDatabase(redisOptions.Database));
+// RedisOptions 绑定进 DI：积分发放失败的补偿队列要用 SharedDatabase 取共享库句柄
+builder.Services.Configure<RedisOptions>(builder.Configuration.GetSection(RedisOptions.SectionName));
+builder.Services.Configure<PasswordResetOptions>(
+    builder.Configuration.GetSection(PasswordResetOptions.SectionName));
 builder.Services.AddOptions<JwtOptions>().Bind(builder.Configuration.GetSection(JwtOptions.SectionName));
 
 builder.Services.AddAppFreeSql(

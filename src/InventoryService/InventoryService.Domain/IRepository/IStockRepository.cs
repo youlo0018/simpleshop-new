@@ -143,6 +143,20 @@ public interface IStockRepository
     /// <returns>流水列表（倒序）。幂等只读。</returns>
     Task<List<StockFlow>> GetFlowsAsync(long skuId, int limit, CancellationToken ct = default);
 
+    /// <summary>按幂等键查一条库存流水（判断某次划出 / 释放是否真的发生过）。</summary>
+    /// <param name="skuId">SKU Id。</param>
+    /// <param name="bizNo">业务单号。</param>
+    /// <param name="action">动作，见 <see cref="StockActions"/>。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>命中的流水；没发生过返回 null。</returns>
+    /// <remarks>
+    /// 秒杀回补要用它：<c>seckill_release</c> 是「可用 += qty」的无条件加法，
+    /// 对**从未划过库存**的商品释放会凭空多出一批货。回补前必须先确认
+    /// <c>seckill_reserve</c> 流水真的存在，才能决定该不该还。
+    /// </remarks>
+    Task<StockFlow?> GetFlowAsync(
+        long skuId, string bizNo, string action, CancellationToken ct = default);
+
     /// <summary>找出疑似孤儿锁定：锁定时间已超过阈值，且没有任何后续的释放 / 扣减流水。</summary>
     /// <param name="olderThanUtc">锁定早于这个时间（UTC）才算候选。</param>
     /// <param name="limit">单次最多返回多少条。</param>

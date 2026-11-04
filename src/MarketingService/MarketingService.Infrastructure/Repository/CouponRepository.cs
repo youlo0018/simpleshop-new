@@ -750,6 +750,49 @@ public sealed class CouponRepository : CrudRepository<UserCoupon>, ICouponReposi
     }
 
     /// <inheritdoc />
+    public async Task<(List<CouponActivity> Items, long Total)> PageClaimableActivitiesAsync(
+        int page, int pageSize, long platformId, DateTime nowUtc,
+        CancellationToken ct = default)
+    {
+        var select = _db.Select<CouponActivity>()
+            .Where(a => a.Status == 1
+                        && a.ClaimStartTime <= nowUtc
+                        && a.ClaimEndTime >= nowUtc
+                        && a.ClaimedQuantity < a.ClaimQuantity)
+            .Where(a => platformId <= 0 || a.PlatformId == platformId || a.PlatformId == 0);
+
+        var total = await select.CountAsync(ct).ConfigureAwait(false);
+        var items = await select
+            .OrderBy(a => a.SortOrder)
+            .OrderByDescending(a => a.Id)
+            .Page(Math.Max(1, page), Math.Clamp(pageSize, 1, 50))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return (items, total);
+    }
+
+    /// <inheritdoc />
+    public async Task<Dictionary<long, int>> CountClaimedByActivitiesAsync(
+        long customerId, IReadOnlyCollection<long> activityIds,
+        CancellationToken ct = default)
+    {
+        if (customerId <= 0 || activityIds.Count == 0)
+        {
+            return new Dictionary<long, int>();
+        }
+
+        var ids = activityIds.Distinct().ToArray();
+        var rows = await _db.Select<UserCoupon>()
+            .Where(a => a.CustomerId == customerId && ids.Contains(a.ActivityId))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return rows.GroupBy(a => a.ActivityId)
+            .ToDictionary(a => a.Key, a => a.Count());
+    }
+
+    /// <inheritdoc />
     public async Task<long> InsertActivityAsync(CouponActivity activity, CancellationToken ct = default)
     {
         // 同模板：Id / 创建时间由服务端生成，已领取数强制从 0 起。

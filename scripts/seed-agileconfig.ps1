@@ -166,6 +166,8 @@ function Get-ServiceConfigs([string]$name, [int]$redisDb) {
         'MerchantPlatformService' = 'http://127.0.0.1:5070'
         'PointService'            = 'http://127.0.0.1:5082'
         'EvaluateService'         = 'http://127.0.0.1:5084'
+        # 日志服务：秒杀报表的场次 PV 要向它聚合（LogService 自己不需要下游地址）。
+        'LogService'              = 'http://127.0.0.1:5088'
     }
     $cfg['Services:PermissionServiceBaseUrl'] = $serviceUrls['PermissionService']
     $cfg['Services:UserServiceBaseUrl']        = $serviceUrls['UserService']
@@ -178,6 +180,9 @@ function Get-ServiceConfigs([string]$name, [int]$redisDb) {
     $cfg['Services:OrderServiceBaseUrl']       = $serviceUrls['OrderService']
     $cfg['Services:PaymentServiceBaseUrl']     = $serviceUrls['PaymentService']
     $cfg['Services:EvaluateServiceBaseUrl']    = $serviceUrls['EvaluateService']
+    # 秒杀报表的场次 PV 在日志服务的 ES 里：不配的话营销服务会 fail-fast 拒绝启动，
+    # 而不是悄悄把 PV 做成恒为 0 的假指标。
+    $cfg['Services:LogServiceBaseUrl']         = $serviceUrls['LogService']
     # 订单服务算运费要读平台级运费配置（BUSINESS.md 6.2），配置存在商户平台服务里。
     # 少这一项时订单服务会 fail-fast 拒绝启动 —— 这是故意的：
     # 宁可启动时立刻报错，也不要「起来了但运费恒为 0」，那种故障要到对账才发现。
@@ -187,8 +192,9 @@ function Get-ServiceConfigs([string]$name, [int]$redisDb) {
     # 不入库、不进发布包；这里只给路径。取货码 = 公钥加密后的订单号，
     # 加解密全在服务端（用户明确要求私钥不放前端）。
     if ($name -eq 'OrderService') {
-        $cfg['PickupCode:RsaPrivateKeyPath'] = 'D:/学习/SimpleShop-new/deploy/keys/pickup-code-private.pem'
-        $cfg['PickupCode:RsaPublicKeyPath']  = 'D:/学习/SimpleShop-new/deploy/keys/pickup-code-public.pem'
+        $repoRoot = Split-Path $PSScriptRoot -Parent
+        $cfg['PickupCode:RsaPrivateKeyPath'] = (Join-Path $repoRoot 'deploy/keys/pickup-code-private.pem')
+        $cfg['PickupCode:RsaPublicKeyPath']  = (Join-Path $repoRoot 'deploy/keys/pickup-code-public.pem')
 
         # 支付超时关单（BUSINESS.md 7.3）：超时 30 分钟。
         # 阈值放配置而不是写死：不同业务等待时长不同，线上要临时调长时改配置比发版快得多。
@@ -197,6 +203,12 @@ function Get-ServiceConfigs([string]$name, [int]$redisDb) {
         $cfg['Orders:MaxClosePerRun']        = '500'
     }
     if ($name -eq 'CustomerService') {
+        $cfg['PasswordReset:Provider'] = 'local-log'
+        $cfg['PasswordReset:FixedCode'] = '123456'
+        $cfg['PasswordReset:ExpireMinutes'] = '5'
+        $cfg['PasswordReset:CooldownSeconds'] = '60'
+        $cfg['PasswordReset:MaxAttempts'] = '5'
+        $cfg['PasswordReset:ExposeCodeInResponse'] = 'true'
         # Gateway 校验的是 CustomerToken.Issuer，必须与之一致。
         # 之前写成 simpleshop，网关验签直接 401，所有 C 端登录后接口都不可用。
         $cfg['Jwt:Issuer']       = 'simpleshop-customer'
@@ -212,7 +224,7 @@ function Get-ServiceConfigs([string]$name, [int]$redisDb) {
 
         # 后台令牌：与 AuthService 同一份证书公钥、同一签发方
         $cfg['Gateway:AdminToken:Issuer'] = 'https://simpleshop.local/'
-        $cfg['Gateway:AdminToken:SigningCertificatePath'] = 'D:/学习/SimpleShop-new/deploy/certs/signing.pfx'
+        $cfg['Gateway:AdminToken:SigningCertificatePath'] = (Join-Path (Split-Path $PSScriptRoot -Parent) 'deploy/certs/signing.pfx')
 
         # 客户令牌：与 CustomerService 同一个 HS256 密钥、同一个签发方
         $cfg['Gateway:CustomerToken:Issuer'] = 'simpleshop-customer'
@@ -234,16 +246,29 @@ function Get-ServiceConfigs([string]$name, [int]$redisDb) {
         # 真正需要登录的加购 / 下单不在这个前缀下。
         $cfg['Gateway:AnonymousPaths:0'] = '/gateway/customers/Register'
         $cfg['Gateway:AnonymousPaths:1'] = '/gateway/customers/Login'
-        $cfg['Gateway:AnonymousPaths:2'] = '/gateway/auth/Token'
-        $cfg['Gateway:AnonymousPaths:3'] = '/gateway/shop/products/List'
-        $cfg['Gateway:AnonymousPaths:4'] = '/gateway/shop/products/Detail'
-        $cfg['Gateway:AnonymousPaths:5'] = '/gateway/shop/catalog/CategoryTree'
-        $cfg['Gateway:AnonymousPaths:6'] = '/gateway/shop/catalog/Brands'
-        $cfg['Gateway:AnonymousPaths:7'] = '/gateway/design/Store'
-        $cfg['Gateway:AnonymousPaths:8'] = '/gateway/evaluates/List'
-        $cfg['Gateway:AnonymousPaths:9'] = '/gateway/marketing/seckill/sessions/Public'
-        $cfg['Gateway:AnonymousPaths:10'] = '/gateway/coupons/Available'
-        $cfg['Gateway:AnonymousPaths:11'] = '/gateway/design/PlatformStore'
+        $cfg['Gateway:AnonymousPaths:2'] = '/gateway/customers/SendPasswordResetCode'
+        $cfg['Gateway:AnonymousPaths:3'] = '/gateway/customers/ResetPassword'
+        $cfg['Gateway:AnonymousPaths:4'] = '/gateway/auth/Token'
+        $cfg['Gateway:AnonymousPaths:5'] = '/gateway/shop/products/List'
+        $cfg['Gateway:AnonymousPaths:6'] = '/gateway/shop/products/Detail'
+        $cfg['Gateway:AnonymousPaths:7'] = '/gateway/shop/products/Search'
+        $cfg['Gateway:AnonymousPaths:8'] = '/gateway/shop/catalog/CategoryTree'
+        $cfg['Gateway:AnonymousPaths:9'] = '/gateway/shop/catalog/Brands'
+        $cfg['Gateway:AnonymousPaths:10'] = '/gateway/shop/catalog/MerchantCategories'
+        $cfg['Gateway:AnonymousPaths:11'] = '/gateway/shop/search/HotWords'
+        $cfg['Gateway:AnonymousPaths:12'] = '/gateway/shop/search/Suggest'
+        $cfg['Gateway:AnonymousPaths:13'] = '/gateway/design/Store'
+        $cfg['Gateway:AnonymousPaths:14'] = '/gateway/design/PlatformStore'
+        $cfg['Gateway:AnonymousPaths:15'] = '/gateway/platforms/Public'
+        $cfg['Gateway:AnonymousPaths:16'] = '/gateway/platforms/PublicDetail'
+        $cfg['Gateway:AnonymousPaths:17'] = '/gateway/platforms/notices/Public'
+        $cfg['Gateway:AnonymousPaths:18'] = '/gateway/regions/Public'
+        $cfg['Gateway:AnonymousPaths:19'] = '/gateway/evaluates/List'
+        $cfg['Gateway:AnonymousPaths:20'] = '/gateway/evaluates/Merchant'
+        $cfg['Gateway:AnonymousPaths:21'] = '/gateway/marketing/seckill/sessions/Public'
+        $cfg['Gateway:AnonymousPaths:22'] = '/gateway/marketing/activities/Public'
+        $cfg['Gateway:AnonymousPaths:23'] = '/gateway/marketing/seckill/sessions/View'
+        $cfg['Gateway:AnonymousPaths:24'] = '/gateway/coupons/Available'
     }
     if ($name -eq 'AuthService') {
         # 后台令牌服务配置（BUSINESS 4.1 / DATA_SPEC 1.5）
@@ -256,13 +281,13 @@ function Get-ServiceConfigs([string]$name, [int]$redisDb) {
         $cfg['Auth:RefreshTokenDays'] = '7'
         # 签名证书路径。AuthService 与 Gateway 必须读同一份文件——换了证书所有已签发令牌立刻失效。
         # 证书本身不入库，由 ./scripts/generate-signing-cert.ps1 生成。
-        $cfg['Auth:SigningCertificatePath'] = 'D:/学习/SimpleShop-new/deploy/certs/signing.pfx'
+        $cfg['Auth:SigningCertificatePath'] = (Join-Path (Split-Path $PSScriptRoot -Parent) 'deploy/certs/signing.pfx')
     }
     if ($name -eq 'ToolService') {
         # 文件存储配置（DATA_SPEC 3.4）。本地存储用于开发；上云只需改 Provider，
         # 业务代码通过 IFileStorage 抽象，不感知具体后端。
         $cfg['FileStorage:Provider']            = 'Local'
-        $cfg['FileStorage:LocalRoot']           = 'D:/学习/SimpleShop-new/uploads'
+        $cfg['FileStorage:LocalRoot']           = (Join-Path (Split-Path $PSScriptRoot -Parent) 'uploads')
         $cfg['FileStorage:PublicBase']          = '/gateway/files/Content'
         $cfg['FileStorage:AllowedExtensions']   = 'png,jpg,jpeg,gif,bmp,webp,pdf,doc,xls,ppt,txt'
         $cfg['FileStorage:MaxSizeBytes:image']      = '5242880'

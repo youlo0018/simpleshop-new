@@ -37,12 +37,12 @@ public sealed class ReportController : ControllerBase
     /// <summary>秒杀效果报表。</summary>
     /// <param name="command">查询条件。</param>
     /// <param name="ct">取消令牌。</param>
-    /// <returns>逐场次的参与人数、抢购成功数、售罄率与成交额合计。</returns>
+    /// <returns>逐场次的参与人数、抢购成功数、售罄率、PV 与成交额。</returns>
     /// <remarks>
-    /// <b>不含「场次 PV」</b>：前台秒杀列表只有一个
-    /// <c>POST /marketing/seckill/sessions/Public</c>，sessionId 在请求体里，
-    /// 而 pv 日志只记录 path / queryString / method，拿不到请求体，
-    /// 因此无法把页面访问按场次归因。与其给一个「所有场次都一样」的假数字，不如不提供。
+    /// 场次 PV 的口径（BUSINESS.md 17）：小程序进入秒杀频道时按场次调用
+    /// <c>GET /marketing/seckill/sessions/View?sessionId=</c> 打埋点，
+    /// 请求日志中间件把它记进 pv.log，日志服务按「路径 + 场次 Id + 时间区间」聚合。
+    /// 只统计营销服务侧那条日志，网关代理日志不计入，避免一次曝光算两次。
     /// </remarks>
     [HttpPost("Seckill")]
     public Task<ApiResponse<SeckillReport>> Seckill(

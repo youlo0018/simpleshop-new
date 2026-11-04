@@ -10,14 +10,39 @@ public sealed record ProductQuery
     /// <summary>按商品名模糊搜索。空表示不过滤。</summary>
     public string Keyword { get; init; } = string.Empty;
 
+    /// <summary>按平台过滤。0 表示不限（后台/内部）；C 端必须传具体平台。</summary>
+    /// <remarks>
+    /// 客户账号是平台内账号，小程序按固定 platformCode 锁平台：
+    /// 商品列表 / 搜索结果必须带平台，否则会把别的平台的商品混进来。
+    /// </remarks>
+    public long PlatformId { get; init; }
+
     /// <summary>按分类过滤。0 表示不过滤。</summary>
     public long CategoryId { get; init; }
+
+    /// <summary>按分类集合过滤（多选）；非空时优先于 <see cref="CategoryId"/>。</summary>
+    public IReadOnlyList<long> CategoryIds { get; init; } = [];
 
     /// <summary>按品牌过滤。0 表示不过滤。</summary>
     public long BrandId { get; init; }
 
+    /// <summary>按品牌集合过滤（多选）；非空时优先于 <see cref="BrandId"/>。</summary>
+    public IReadOnlyList<long> BrandIds { get; init; } = [];
+
     /// <summary>按商户过滤。0 表示不过滤。</summary>
     public long MerchantId { get; init; }
+
+    /// <summary>限制在指定商品 Id 集合内。</summary>
+    public IReadOnlyList<long> ProductIds { get; init; } = [];
+
+    /// <summary>是否启用 <see cref="ProductIds"/> 目标过滤；空集合表示没有匹配商品。</summary>
+    public bool TargetFilterSpecified { get; init; }
+
+    /// <summary>最低售价（按 SKU 最低售价），0 表示不限。</summary>
+    public decimal MinPrice { get; init; }
+
+    /// <summary>最高售价（按 SKU 最低售价），0 表示不限。</summary>
+    public decimal MaxPrice { get; init; }
 
     /// <summary>按上下架状态过滤。0 表示不过滤。</summary>
     public int Status { get; init; }
@@ -45,4 +70,10 @@ public static class ProductSorts
 
     /// <summary>最新创建在前。</summary>
     public const int Newest = 2;
+
+    /// <summary>按 SKU 最低售价从低到高（全局排序，不是当前页内排序）。</summary>
+    public const int PriceAsc = 3;
+
+    /// <summary>按 SKU 最低售价从高到低。</summary>
+    public const int PriceDesc = 4;
 }

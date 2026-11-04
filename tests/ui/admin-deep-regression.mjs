@@ -35,6 +35,21 @@ const USER = process.env.ADMIN_USER || 'codexadmin';
 const PASS = process.env.ADMIN_PASS || 'Admin123456';
 const VIEWPORT = { width: 1440, height: 900 };
 
+// /internal/** 现在要求 X-Internal-Token（TenantContextMiddleware fail-closed，没有口令 401）。
+// 口令优先环境变量，其次读 deploy/.env 的 INTERNAL_SERVICE_TOKEN —— 与 e2e 脚本同一口径。
+const INTERNAL_TOKEN = (() => {
+  if (process.env.SIMPLESHOP_INTERNAL_TOKEN) return process.env.SIMPLESHOP_INTERNAL_TOKEN.trim();
+  try {
+    const line = fs.readFileSync(path.join(ROOT, 'deploy', '.env'), 'utf8')
+      .split(/\r?\n/)
+      .find((l) => l.startsWith('INTERNAL_SERVICE_TOKEN='));
+    return line ? line.slice('INTERNAL_SERVICE_TOKEN='.length).trim() : '';
+  } catch {
+    return '';
+  }
+})();
+const INTERNAL_HEADERS = INTERNAL_TOKEN ? { 'x-internal-token': INTERNAL_TOKEN } : {};
+
 const IGNORED_ERROR = [
   /favicon/i,
   /Download the Vue Devtools/i,
@@ -51,6 +66,10 @@ const slug = (s) =>
 
 const ignored = (t) => IGNORED_ERROR.some((re) => re.test(t));
 
+// 与 IGNORED_ERROR 配套的请求级忽略名单：控制台里「Failed to load resource」不带 URL，
+// 只能靠 requestfailed 事件确认失败的是这些域名，再按数量抵消对应的通用报错。
+const IGNORED_REQUEST_HOSTS = ['cdn.example.com'];
+
 const results = [];
 
 // opts.allow4xx：允许列表里的正则命中 URL 时，4xx 不计为失败。
@@ -61,6 +80,8 @@ async function testCase(page, id, name, action, opts = {}) {
   const allowConsole = opts.allowConsole || [];
   const errors = [];
   const failed = [];
+  const resourceErrors = [];
+  let ignoredFailureCount = 0;
   const onConsole = (m) => {
     const text = m.text();
     if (m.type() !== 'error' || ignored(text)) return;
@@ -68,6 +89,10 @@ async function testCase(page, id, name, action, opts = {}) {
     // 那是**预期行为**的一部分（我们要的就是「被拒且有提示」），
     // 不豁免的话用例会因为「页面正确拒绝了请求」而判红。
     if (allowConsole.some((re) => re.test(text))) return;
+    if (/Failed to load resource/i.test(text)) {
+      resourceErrors.push(text);
+      return;
+    }
     errors.push(text.slice(0, 400));
   };
   const onResponse = (r) => {
@@ -76,19 +101,29 @@ async function testCase(page, id, name, action, opts = {}) {
       failed.push(`${r.status()} ${r.request().method()} ${r.url().replace(BASE, '')}`);
     }
   };
+  const onRequestFailed = (r) => {
+    const url = r.url();
+    if (IGNORED_REQUEST_HOSTS.some((host) => url.includes(host))) ignoredFailureCount++;
+  };
   page.on('console', onConsole);
   page.on('response', onResponse);
+  page.on('requestfailed', onRequestFailed);
 
   let detail = '';
   let ok = false;
   try {
     detail = (await action()) || '';
+    // 抵消同页确认的「已知域名资源失败」；多余的通用报错照常计入失败。
+    for (const text of resourceErrors.slice(ignoredFailureCount)) {
+      errors.push(text.slice(0, 400));
+    }
     ok = errors.length === 0 && failed.length === 0;
   } catch (e) {
     errors.push(e.message || String(e));
   } finally {
     page.off('console', onConsole);
     page.off('response', onResponse);
+    page.off('requestfailed', onRequestFailed);
   }
 
   const shot = `deep-${slug(id)}-${slug(name)}-1440x900.png`;
@@ -172,6 +207,7 @@ async function createPendingOrder(token, deliveryTypeOverride = 0, fixture = nul
       for (const candidateSku of candidate.skus) {
         const snapshotResponse = await fetch(
           `${INVENTORY}/internal/inventory/Snapshot?skuIds=${candidateSku.skuId}`,
+          { headers: INTERNAL_HEADERS },
         );
         const snapshotBody = await snapshotResponse.json().catch(() => null);
         const available = Number(snapshotBody?.data?.[0]?.available || 0);
@@ -309,7 +345,10 @@ async function createDraftProduct(token, name, deliveryType = 1) {
  *
  * @param deliveryType 1 快递 / 2 虚拟 / 3 自提
  */
-async function ensureSellableProduct(token, deliveryType) {
+// minAvailable：这次下单需要几件。只判「> 0」会让「只退一件（下 2 件）」这类用例
+// 挑中一个只剩 1 件库存的 SKU，下单时被后端判「可用库存不足」——
+// 失败信息指向库存，看起来像业务缺陷，实际是夹具挑错了商品。
+async function ensureSellableProduct(token, deliveryType, minAvailable = 1) {
   // 先看有没有现成的（别的回归可能刚建过）
   const list = await gatewayCall(token, '/gateway/shop/products/List', 'POST', {
     customerId: '0', page: 1, pageSize: 50,
@@ -320,9 +359,11 @@ async function ensureSellableProduct(token, deliveryType) {
     }).catch(() => null);
     if (Number(detail?.deliveryType) === deliveryType && detail?.skus?.length) {
       const sku = detail.skus[0];
-      const snap = await fetch(`${INVENTORY}/internal/inventory/Snapshot?skuIds=${sku.skuId}`)
+      const snap = await fetch(
+        `${INVENTORY}/internal/inventory/Snapshot?skuIds=${sku.skuId}`,
+        { headers: INTERNAL_HEADERS })
         .then((r) => r.json()).catch(() => null);
-      if (Number(snap?.data?.[0]?.available || 0) > 0) return { detail, sku };
+      if (Number(snap?.data?.[0]?.available || 0) >= minAvailable) return { detail, sku };
     }
   }
 
@@ -895,6 +936,9 @@ async function main() {
       await testCase(page, 'merged-product-inventory', '商品列表：库存操作进入 SKU 调整页', async () => {
         await goto(page, '/products');
         const btn = page.locator('.el-table button:has-text("库存"):visible').first();
+        // 列表是异步加载的：重接口跑完紧接着进入本用例时，按钮可能还没渲染出来。
+        // 直接 count 会把「还在加载」误判成「按钮不存在」。
+        await btn.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
         if ((await btn.count()) === 0) throw new Error('商品列表没有「库存」操作按钮');
         await btn.click({ timeout: 8000 });
         await page.waitForTimeout(650);
@@ -1636,7 +1680,9 @@ async function main() {
         if (!productId) throw new Error('取不到商品 Id');
 
         await goto(page, `/products/inventory/${productId}`);
-        const rows = await page.locator('.el-table__row').count();
+        const rowLocator = page.locator('.el-table__row');
+        await rowLocator.first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+        const rows = await rowLocator.count();
         if (rows === 0) throw new Error('调整页没有 SKU 行');
 
         // 空提交：后端校验必须给出提示，不能静默吞掉
@@ -1657,6 +1703,7 @@ async function main() {
         // 几轮之后「当前可用」跟别的用例里的期望值就对不上了。
         await goto(page, `/products/inventory/${productId}`);
         const back = page.locator('.el-table__row').first();
+        await back.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
         await back.locator('input').first().fill('-1');
         await back.locator('input').nth(1).fill('深度回归库存还原');
         await back.locator('button:has-text("提交")').first().click({ timeout: 8000 });
@@ -2048,7 +2095,8 @@ async function main() {
 
       await testCase(page, 'page-refund-dialog-partial', '订单详情：部分退款（勾选商品行 + 金额）→ 退款单落库', async () => {
         const token = await apiToken(USER, PASS);
-        const fixture = await ensureSellableProduct(token, 1);
+        // 这个用例要下 2 件（只退其中 1 件），所以要求库存至少 2 件
+        const fixture = await ensureSellableProduct(token, 1, 2);
         // 数量 2 才谈得上「只退一件」
         const { orderNo, orderId } = await createPendingOrder(token, 0, fixture, 2);
         await gatewayCall(token, '/gateway/admin/orders/SimulatePayment', 'POST', {

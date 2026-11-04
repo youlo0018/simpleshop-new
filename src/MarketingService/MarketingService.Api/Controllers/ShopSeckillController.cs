@@ -33,4 +33,18 @@ public sealed class ShopSeckillController : ControllerBase
     public Task<ApiResponse<List<PublicSessionDto>>> Public(
         [FromBody] QueryPublicSessionsCommand command, CancellationToken ct)
         => _mediator.Send(command, ct);
+
+    /// <summary>场次曝光埋点（PV）。</summary>
+    /// <param name="sessionId">被浏览的场次 Id。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>空成功响应。</returns>
+    /// <remarks>
+    /// <b>GET + 查询参数是刻意的</b>：网关与各服务的请求日志中间件只记录
+    /// path / queryString，不记请求体。场次 Id 放进查询串，pv.log 才能把它
+    /// 落成可检索字段，日志服务才能按场次聚合出 BUSINESS.md 17 的「场次 PV」。
+    /// 前端失败重试 / 用户刷新都会各算一次 PV，这正是 PV 的定义。
+    /// </remarks>
+    [HttpGet("View")]
+    public Task<ApiResponse> View([FromQuery] long sessionId, CancellationToken ct)
+        => _mediator.Send(new RecordSessionViewCommand(sessionId), ct);
 }

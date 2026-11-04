@@ -49,9 +49,20 @@ using (var scope = app.Services.CreateScope())
     {
         Console.WriteLine("[search] 未配置 Elasticsearch，跳过索引初始化（商品搜索将降级为数据库浏览）");
     }
-    else if (!await index.EnsureIndexAsync())
+    else
     {
-        Console.WriteLine("[search] 商品索引初始化失败，商品搜索将降级为数据库浏览");
+        try
+        {
+            if (!await index.EnsureIndexAsync())
+            {
+                Console.WriteLine("[search] 商品索引初始化失败，商品搜索将降级为数据库浏览");
+            }
+        }
+        catch (Exception ex)
+        {
+            // ES 不可达时 HttpClient 直接抛连接异常，不能让它带崩整个商品服务。
+            Console.WriteLine($"[search] 商品索引初始化异常，商品搜索将降级为数据库浏览：{ex.Message}");
+        }
     }
 }
 

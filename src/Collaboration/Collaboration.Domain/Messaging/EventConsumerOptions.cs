@@ -21,6 +21,16 @@ public sealed class EventConsumerOptions
     /// <summary>预取条数。太大时单个消费者囤积消息、停止消费，太小时性能差。</summary>
     public ushort PrefetchCount { get; set; } = 20;
 
+    /// <summary>
+    /// 异步消费的并发度：同时处理多少条消息。
+    /// </summary>
+    /// <remarks>
+    /// RabbitMQ.Client 6.x 的 <c>ConsumerDispatchConcurrency</c> 默认是 <b>1</b>：
+    /// 只打开 <c>DispatchConsumersAsync</c> 而不调这个值，回调依旧是串行的，
+    /// 吞吐仍等于「1 ÷ 单条处理时间」。日志写入是纯 IO，适当并发可以线性提速。
+    /// </remarks>
+    public int DispatchConcurrency { get; set; } = 8;
+
     /// <summary>死信队列名。为空时自动用「队列名 + .dlq」。</summary>
     public string DeadLetterQueueName { get; set; } = string.Empty;
 

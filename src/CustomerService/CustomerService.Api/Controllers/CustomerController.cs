@@ -2,8 +2,10 @@ using Collaboration.Domain.Common;
 using CustomerService.Application.Features.Customer.Address;
 using CustomerService.Application.Features.Customer.Favorite;
 using CustomerService.Application.Features.Customer.Login;
+using CustomerService.Application.Features.Customer.Password;
 using CustomerService.Application.Features.Customer.Profile;
 using CustomerService.Application.Features.Customer.Register;
+using CustomerService.Application.Features.Customer.Session;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -39,6 +41,52 @@ public sealed class CustomerController : ControllerBase
     /// <returns>成功返回令牌与资料；凭据错误返回 400 与统一消息。</returns>
     [HttpPost("Login")]
     public Task<ApiResponse<LoginResult>> Login([FromBody] LoginCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
+    /// <summary>发送忘记密码验证码。</summary>
+    /// <param name="command">平台、手机号。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>本地开发环境会带固定验证码；生产关闭。</returns>
+    [HttpPost("SendPasswordResetCode")]
+    public Task<ApiResponse<PasswordResetCodeSentDto>> SendPasswordResetCode(
+        [FromBody] SendPasswordResetCodeCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
+    /// <summary>忘记密码：验证码重置。</summary>
+    /// <param name="command">平台、手机号、验证码与新密码。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>成功返回空响应。</returns>
+    [HttpPost("ResetPassword")]
+    public Task<ApiResponse> ResetPassword(
+        [FromBody] ResetPasswordCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
+    /// <summary>登录态修改密码。</summary>
+    /// <param name="command">旧密码与新密码。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>成功返回空响应。</returns>
+    [HttpPost("ChangePassword")]
+    public Task<ApiResponse> ChangePassword(
+        [FromBody] ChangeCustomerPasswordCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
+    /// <summary>刷新客户令牌（换发新令牌并作废当前会话）。</summary>
+    /// <param name="command">空命令：客户与会话都取自网关校验后的令牌。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>新令牌与资料；未登录返回 401。</returns>
+    /// <remarks>令牌必须尚未过期才能刷新：网关在验签阶段就会拒绝过期令牌。</remarks>
+    [HttpPost("Refresh")]
+    public Task<ApiResponse<LoginResult>> Refresh(
+        [FromBody] RefreshCustomerTokenCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
+    /// <summary>退出登录（删当前设备的服务端会话，幂等）。</summary>
+    /// <param name="command">空命令：会话 Id 取自网关校验后的令牌。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>成功返回空响应；会话存储不可用返回 500。</returns>
+    [HttpPost("Logout")]
+    public Task<ApiResponse> Logout(
+        [FromBody] LogoutCustomerCommand command, CancellationToken ct)
         => _mediator.Send(command, ct);
 
     /// <summary>查自己的资料（「我的」页）。</summary>

@@ -2,7 +2,7 @@
 
 > 用途：实现期按本文的链路小节逐步打断点验证；改交易/库存/定时链路后必须同步修订对应小节。
 > 业务规则见 `BUSINESS.md`，分层与注释规范见 `CODING_STANDARD.md`。
-> 状态：需求已确认，本文是实现期的主要验证清单。
+> 状态：实现已落地，本文作为链路回归索引与风险台账维护。
 
 ## 目录
 
@@ -23,6 +23,9 @@
 5. 下游服务构造 `TenantContext`，所有列表/详情按此裁剪。
 
 **验证点**：匿名可访问路径白名单要**显式列举**（游客浏览相关接口），不要靠「默认放行」。
+客户令牌同理：未映射到权限点的路径只有命中 `GatewayOptions.CustomerPaths` / `CustomerPathPrefixes`
+的 C 端显式清单才放行，其余一律 403（fail-closed）——否则新增后台接口漏配 `api_path` 时，
+顾客令牌会直接穿透（历史漏洞：`/gateway/payments/Simulate`）。
 
 ## 链路 1：后台登录 `/gateway/auth/Token`
 
@@ -37,10 +40,22 @@ AuthService（OpenIddict password flow，公开客户端 `admin-app`，RS256）�
 
 ## 链路 2：客户注册/登录
 
-1. `POST /gateway/customers/Register`：校验用户名/手机号/密码 → 写 `Customer` → **同步 gRPC 赠送 100 积分**。
-2. `POST /gateway/customers/Login`：校验密码 → 签发 **HS256** 客户 JWT（`tenant_type=customer`）→ 写 Redis 会话（支持滑动续期 / 刷新 / 登出，网关校验会话键）。
+1. `POST /gateway/customers/Register`：校验用户名/手机号/密码 → 写 `Customer` → **同步内网 HTTP** 调积分服务赠送注册积分（金额由积分规则决定）。
+2. `POST /gateway/customers/Login`：校验密码 → 签发 **HS256** 客户 JWT（`tenant_type=customer`，声明含 `sub` / `customer_no` / `jti`）→ 在共享 Redis 库写服务端会话键 `customer:session:{customerId}:{jti}`（TTL 与令牌一致）。会话键写失败时登录返回失败，不发放「拿在手里但每次请求都 401」的死令牌。
+3. `POST /gateway/customers/Refresh`：网关验签（令牌必须未过期）并校验会话键 → 签发带新 `jti` 的令牌 → 写新会话键 → 删旧会话键。旧令牌从此刻起 401。
+4. `POST /gateway/customers/Logout`：删当前设备（当前 `jti`）的会话键，幂等；只影响本设备，不踢掉同一客户的其它设备。
 
-**验证点**：注册赠送积分是跨服务同步调用，必须明确「注册成功但积分未到账」的处理路径（建议：注册不回滚，积分走补偿重试）。
+**验证点**：注册赠送积分是跨服务同步调用，注册**不回滚**，失败时写入共享 Redis 补偿队列
+（`points:grant-compensate`），由 ScheduledService 的 `point_grant_compensate` 任务按 bizNo 幂等补发；
+连续 10 次失败转人工。
+
+> **服务端会话（已实现）**：网关对每个客户令牌校验会话键并滑动续期（键在 → 放行并续期，
+> 键没了 → 401，Redis 不可用 → 503 fail-closed）；客户端启动时静默刷新令牌、
+> 退出登录先调服务端 Logout 再清本地。会话键按 `jti` 隔离，一台设备一把键。
+> 回归覆盖：`customer-regression.ps1` 的 `API-CUS-014`（刷新后新令牌可用、旧令牌 401）、
+> `API-CUS-015`（刷新 A 不影响 B）、`API-CUS-016`（登出后旧令牌立刻 401）。
+> 另外：`/gateway/shop/products/*` 等匿名路径现在**会验签可选令牌**（带令牌就注入客户身份），
+> 所以登录客户在商品卡上看到的是自己的券后价；没有令牌的请求一律按游客算，不采信请求体里的 `customerId`。
 
 ## 链路 3：后台建号/改号 `/gateway/users/Create`
 
@@ -102,16 +117,17 @@ UserService。校验用户名/手机号唯一（查库，放 Handler）→ 写 `
 | ④失败 | ③ 已解冻，② 已回退 |
 | ⑤失败 | ④ 已释放、③ 已解冻、② 已回退 |
 
-## 链路 8：库存锁定（InventoryService gRPC）
+## 链路 8：库存锁定（InventoryService 内部 HTTP）
 
-加锁 `lock:stock:{skuId}` → 条件更新 `WHERE Available >= qty` → `Available -= qty`，`Locked += qty` → 写 `StockFlow`（按 `BizNo + SkuId + Action` 幂等）。
+条件更新（三个池子的原值都进 `WHERE`，未命中即抛错回滚）→ `Available -= qty`，`Locked += qty` → 写 `StockFlow`（按 `BizNo + SkuId + Action` 幂等）。
+**不加** `lock:stock:{skuId}` 行级 Redis 锁：Redis 锁有 TTL，业务超过 TTL 就自动释放、并发照样穿过去，而条件更新在数据库层就能挡住（见 BUSINESS 20.2）。
 
 **验证点**：并发下单不超卖；重复请求不重复扣减。
 
 ## 链路 9：支付创建/确认
 
 1. `/payments/Create`：**服务端反查订单实付**确定金额（不接受客户端金额）。
-2. `/payments/Confirm`：加锁 `lock:payment:callback:{bizNo}` → 幂等确认 → 置已支付 → 发布 `payment.succeeded`。
+2. `/payments/Confirm`：条件更新幂等确认（`status = 期望值`，重复回调命中 0 行即按已处理返回）→ 置已支付 → 发布 `payment.succeeded`。
 3. `/payments/Simulate {orderNo, success}`：后台快捷入口，复用同一确认逻辑；`success=false` 时订单**保持 10**。受 `Payment:SimulateEnabled` 开关控制。
 
 **验证点**：重复确认不重复发事件；模拟支付失败后可重新发起。
@@ -198,10 +214,10 @@ UserService。校验用户名/手机号唯一（查库，放 Handler）→ 写 `
 | 1 | 客户申请（`/payments/Refund`）：校验**退款窗口**——虚拟订单仅 20/30；实物订单 20/30/40/50 |
 | 2 | 校验**累计退款 ≤ 实付（含运费）**；部分退款不退运费 |
 | 3 | 退款单待审批(10) |
-| 4 | 审批同意 → 已退款(20) → 发布 `payment.refunded`：Order 订单 → 60；Inventory `Deducted -= qty`，`Available += qty`；Point 回收积分（整单全额 / 部分按比例**向上取整**，回原冻结批次） |
+| 4 | 审批同意 → 已退款(20) → 发布 `payment.refunded`：Order 侧「台账 + `refunded_amount`」同事务写入（台账退款单号用支付侧的 `refund_no`，同一订单多次部分退款不撞唯一键）；Inventory 按**本次退的件数**（`RefundItemInput.Quantity`，0 = 只退钱不退货）`Deducted -= qty`、`Available += qty`；Point 按**累计**比例向上取整回收（幂等键含退款单号），回原冻结批次 |
 | 5 | 审批拒绝 → 已拒绝(90)，无副作用 |
 
-**验证点**：虚拟订单在 50 状态调用退款必须被拒绝；重复审批必须幂等。
+**验证点**：虚拟订单在 50 状态调用退款必须被拒绝；重复审批必须幂等；同一订单两次部分退款各自写台账且积分累计回收。
 
 ## 链路 13：定时任务（ScheduledService）
 
@@ -215,7 +231,9 @@ UserService。校验用户名/手机号唯一（查库，放 Handler）→ 写 `
 | **活动参与记录孤儿清理** | 每 15 分钟 | 参与记录创建超过 **30 分钟**仍无对应订单 → 先由订单服务批量确认不存在，再软删；报表与下钻都不会虚增 |
 | **积分过期** | **每日 02:00** | 扫描过期批次 → 扣余额 + 写过期流水 |
 | **评价聚合重算** | **每日 03:00** | 全量重算有评价 SPU 的均分与商户评分（**只统计有评价商品**） |
-| 秒杀场次结算 | 每分钟 | 场次到时 → 结束(30) → 剩余库存回补 → 发布 `seckill.session.ended` |
+| 秒杀场次结算 | 每分钟 | 场次到时 → 结束(30) → 剩余库存回补；**回补失败保留 StockTransferred 与 Redis 余量键，下一轮连同「已结束但没还完」的场次一起重试** |
+| **0 元订单结清补偿** | 每 2 分钟 | 实付 0 元、状态 20 且 `settle_status = 0` 的订单 → 重放「扣库存 / 实扣积分 / 核销券 / 发满赠」→ 成功置 `settle_status = 1`（下游全部按 bizNo 幂等） |
+| **积分发放补偿** | 每 5 分钟 | 消费共享 Redis 队列 `points:grant-compensate`：注册赠分 / 首评赠分 / 订单完成赠分失败时入队，按 bizNo 幂等重放；连续失败 10 次转人工 |
 
 **验证点**：任务幂等可重跑；多实例同时跑只有一个生效。
 
@@ -239,6 +257,11 @@ UserService。校验用户名/手机号唯一（查库，放 Handler）→ 写 `
 登录解析权限点 → 写入令牌 → 网关 30 秒缓存比对接口路径 → 注入声明 → 下游按 `TenantContext` 裁剪数据。
 
 **验证点**：`user_role` 无绑定 → 403（**fail-closed**）；客户令牌访问后台接口 → 403；商户改他商商品 → 404。
+
+**匿名白名单**：`/gateway/platforms/Public`、`/gateway/platforms/PublicDetail` 是**刻意匿名**的
+——运行期切换平台发生在登录之前。它们只返回启用平台的公开信息（商城名 / Logo / 主题色 /
+分享与协议文案），不含商户、订单等任何业务数据；停用平台与不存在同样回 404。
+新增匿名路径必须同时登记 `GatewayOptions.AnonymousPaths` 与 `scripts/check-permission-paths.ps1` 的白名单。
 
 ## 链路 16：评价链路
 
@@ -396,4 +419,30 @@ PV / 操作 / 异常中间件 → RabbitMQ → LogService → Elasticsearch（�
 3. 改动链路后**同一次会话内**更新本文对应小节（协作约定见 `AI_HANDOFF.md` 第 3 节）。
 4. 实现期每个链路完成后，把对应的 P0 风险逐条验证并在本文标注「已验证 / 待验证」。
 5. 核心算法（优惠引擎、库存、状态机、积分、秒杀库存）必须有**单元测试**覆盖分支，这是 P0 风险 1 / 3 / 4 的主要防线。
+
+## 小程序重建交付审查（2026-11-02）
+
+### 已完成
+
+- 平台内客户账号、公开平台信息、运行期平台切换和按平台本地登录态。
+- C 端商品 / 分类 / 搜索 / 购物车 / 结算 / 模拟支付 / 订单 / 取货码主链路。
+- 退款申请、凭证图片、退款进度、撤销、审批完成时间与后台详情。
+- 领券中心分页 DTO、已领取状态、券包范围文案、商品按活动 / 券目标过滤。
+- 积分中心余额、抵扣汇率、即将过期积分、签到规则与下次奖励。
+- 商户公开活动、商户分类聚合、商户评价、店铺装修公开读取。
+- 忘记密码与修改密码；本地固定验证码，Redis 冷却与错误次数限制。
+- 装修属性新增 `select / switch / list / jump`，轮播图与金刚区支持逐项跳转；
+  平台装修新增 TabBar 编辑和商城页三 Tab 配置。
+- 商城端从零重写为 uni-app Vue3 + TypeScript + Pinia，覆盖 36 个路由页面，
+  H5 类型检查与生产构建通过；移动端 390px 首屏 Playwright 巡检通过。
+
+### 已知边界
+
+| 项 | 状态 |
+|---|---|
+| 微信小程序真实 AppId | 未提供；manifest 使用 `touristappid` 本地调试 |
+| 微信登录 / 微信支付 | 明确不做；仅账号密码 + 模拟支付 |
+| 真实短信供应商 | 未定；当前 `local-log` 固定验证码，生产必须替换发送器 |
+| 旧客户回填 `DEMOPL` | 回填接口已就绪，但本机数据库无 `DEMOPL` 平台，未执行 |
+| 仓库路径含 `#` | Vite 对 `#` 路径有限制；H5 生产构建已在无 `#` 临时目录验证通过 |
 

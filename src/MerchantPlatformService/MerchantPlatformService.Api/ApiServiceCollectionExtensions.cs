@@ -1,8 +1,10 @@
+using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.MediatR;
 using FluentValidation;
 using MediatR;
 using MerchantPlatformService.Application.Features.Design;
 using MerchantPlatformService.Application.Features.Merchant;
+using MerchantPlatformService.Application.Features.Notice;
 using MerchantPlatformService.Application.Features.Platform;
 using MerchantPlatformService.Application.Features.Region;
 using MerchantPlatformService.Application.Services;
@@ -22,6 +24,8 @@ public static class ApiServiceCollectionExtensions
     public static IServiceCollection AddAppServices(
         this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInternalTokenPropagation();
+
         var appAssembly = typeof(PlatformValidators).Assembly;
 
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(appAssembly));
@@ -39,6 +43,7 @@ public static class ApiServiceCollectionExtensions
         MerchantValidators.AddMerchantValidators(services);
         RegionValidators.AddRegionValidators(services);
         DesignValidators.AddDesignValidators(services);
+        NoticeValidators.AddNoticeValidators(services);
 
         AddProductPort(services, configuration);
 
@@ -64,6 +69,6 @@ public static class ApiServiceCollectionExtensions
 
             // 批量下架还要逐个同步搜索索引，商品多时比普通查询慢得多
             client.Timeout = TimeSpan.FromSeconds(60);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 }

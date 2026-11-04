@@ -123,8 +123,11 @@ public static class DesignValidator
         List<long> products)
     {
         var allowedPages = forMerchant ? DesignPages.MerchantPages : DesignPages.PlatformPages;
+        var requiredPages = forMerchant
+            ? DesignPages.MerchantPages
+            : new[] { DesignPages.Index, DesignPages.Profile };
 
-        foreach (var page in allowedPages)
+        foreach (var page in requiredPages)
         {
             if (!config.Pages.TryGetValue(page, out var canvas) || canvas is null)
             {
@@ -135,13 +138,12 @@ public static class DesignValidator
             ValidateComponents(page, canvas, forMerchant, errors, warnings, products);
         }
 
-        // 商户画布锁定为店铺页：传了首页 / 我的页等于越权去改平台的东西
-        if (!forMerchant) return;
-
         foreach (var page in config.Pages.Keys.Where(
-            a => !DesignPages.MerchantPages.Contains(a, StringComparer.Ordinal)))
+            a => !allowedPages.Contains(a, StringComparer.Ordinal)))
         {
-            errors.Add($"商户装修不能配置「{page}」页面，只能配置店铺页");
+            errors.Add(forMerchant
+                ? $"商户装修不能配置「{page}」页面，只能配置店铺页"
+                : $"平台装修不能配置未知页面「{page}」");
         }
     }
 

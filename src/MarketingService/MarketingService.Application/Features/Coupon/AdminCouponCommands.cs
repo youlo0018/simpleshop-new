@@ -355,11 +355,14 @@ public sealed record CouponActivityItem(
 /// <param name="ReceiveAt">领取时间。</param>
 /// <param name="ExpireAt">到期时间。</param>
 /// <param name="ConsumeAt">核销时间，未核销为空。</param>
+/// <param name="TargetType">适用范围值，见 <see cref="TargetTypes"/>。</param>
+/// <param name="ScopeText">适用范围说明，直接展示给客户。</param>
 public sealed record CouponRecordItem(
     long CouponId, string CouponCode, long CustomerId, long TemplateId, string TemplateName,
     int CouponType, string CouponTypeName, decimal ThresholdAmount, decimal DiscountAmount,
     decimal DiscountRate, string OrderNo, int Status, string StatusName,
-    string ReceiveAt, string ExpireAt, string? ConsumeAt);
+    string ReceiveAt, string ExpireAt, string? ConsumeAt,
+    int TargetType = TargetTypes.All, string ScopeText = "");
 
 /// <summary>券后台命令的校验器注册。</summary>
 public static class AdminCouponValidators

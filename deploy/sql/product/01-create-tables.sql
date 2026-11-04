@@ -208,6 +208,29 @@ CREATE TABLE IF NOT EXISTS sku_spec_value (
 );
 CREATE INDEX IF NOT EXISTS idx_sku_spec_value_value ON sku_spec_value (spec_value_id);
 
+-- ===== 搜索热搜词（按平台维护，小程序搜索页展示） =====
+CREATE TABLE IF NOT EXISTS search_hot_keyword (
+    id               bigint        NOT NULL,
+    created_at       timestamp     NOT NULL,
+    updated_at       timestamp     NULL,
+    is_deleted       boolean       NOT NULL DEFAULT false,
+    deleted_at       timestamp     NULL,
+    created_by_id    bigint        NOT NULL DEFAULT 0,
+    created_by_name  varchar(64)   NOT NULL DEFAULT '',
+    operation_id     bigint        NOT NULL DEFAULT 0,
+    operation_name   varchar(64)   NOT NULL DEFAULT '',
+    platform_id      bigint        NOT NULL DEFAULT 0,
+    merchant_id      bigint        NOT NULL DEFAULT 0,
+    keyword          varchar(64)   NOT NULL DEFAULT '',
+    sort_order       int           NOT NULL DEFAULT 0,
+    status           int           NOT NULL DEFAULT 1,
+    CONSTRAINT pk_search_hot_keyword PRIMARY KEY (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_search_hot_keyword_public
+    ON search_hot_keyword (platform_id, status, sort_order)
+    WHERE is_deleted = false;
+
 -- 应用角色授权：simpleshop_app 在 public schema 上没有 CREATE 权限
 -- （表结构只由本目录的脚本建立），但需要对已建好的表有 DML 权限。
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO simpleshop_app;

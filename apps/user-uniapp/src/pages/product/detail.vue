@@ -1,223 +1,289 @@
 <template>
-  <view class="page detail-page">
-    <view v-if="loading" class="loading">正在加载商品…</view>
-    <template v-else-if="product">
-      <swiper class="gallery" :indicator-dots="true" circular>
-        <swiper-item v-for="image in gallery" :key="image">
-          <image class="gallery__image" :src="image" mode="aspectFill" />
+  <view class="product-detail">
+    <AppHeader back title="" edge-actions>
+      <template #right>
+        <button class="header-action" aria-label="收藏" @click="favorite">
+          <AppIcon :type="favorited ? 'heart-filled' : 'heart'" :size="22" :color="favorited ? '#e94a65' : '#1a1a1a'" />
+        </button>
+      </template>
+    </AppHeader>
+    <view v-if="detail" class="product-detail__content">
+      <swiper class="gallery" circular indicator-dots>
+        <swiper-item v-for="(image, index) in images" :key="index">
+          <view v-if="failedImages[index]" class="gallery__fallback">
+            <AppIcon type="image" :size="42" color="#c3c3c8" />
+            <text>{{ detail.spuName }}</text>
+          </view>
+          <image
+            v-else
+            class="gallery__image"
+            :src="image"
+            mode="aspectFill"
+            @click="preview(image)"
+            @error="failedImages[index] = true"
+          />
         </swiper-item>
       </swiper>
-      <view class="panel detail">
-        <text class="detail__name">{{ product.spuName }}</text>
-        <text v-if="product.subTitle" class="detail__sub">{{ product.subTitle }}</text>
-        <view class="detail__price">
-          <text class="amount detail__amount">¥{{ amount(selectedSku?.finalPrice || minPrice) }}</text>
-          <text
-            v-if="Number(selectedSku?.originalPrice || 0) > Number(selectedSku?.finalPrice || 0)"
-            class="detail__original"
-          >
-            ¥{{ amount(selectedSku.originalPrice) }}
+      <view class="summary">
+        <view class="summary__price-row">
+          <text class="summary__price">{{ money(currentPrice) }}</text>
+          <text v-if="detail.skus?.[0]?.originalPrice > currentPrice" class="summary__original">
+            {{ money(detail.skus[0].originalPrice) }}
           </text>
-          <text class="detail__score">{{ score(product.evaluationScore) }} 分 · {{ product.evaluationCount || 0 }} 条评价</text>
+          <text class="summary__sales">已售 {{ detail.sales || 0 }}</text>
         </view>
-        <view class="detail__meta">
-          <text class="detail__delivery">{{ deliveryName }}</text>
-          <text class="detail__favorite" @tap="toggleFavorite">
-            {{ favorite ? '★ 已收藏' : '☆ 收藏' }}
-          </text>
+        <text class="summary__title">{{ detail.spuName }}</text>
+        <text v-if="detail.subTitle" class="summary__subtitle">{{ detail.subTitle }}</text>
+        <view class="summary__badges">
+          <text v-if="detail.merchantId === '0'">自营</text>
+          <text>{{ deliveryLabel(detail.deliveryType) }}</text>
+          <text v-if="serviceGuarantee">{{ serviceGuarantee }}</text>
         </view>
       </view>
 
-      <view class="panel sku-picker">
-        <view v-for="spec in product.specs" :key="spec.specId" class="sku-row">
-          <text class="sku-row__label">{{ spec.specName }}</text>
-          <view class="sku-row__values">
-            <view
-              v-for="value in spec.values"
-              :key="value.specValueId"
-              class="sku-value"
-              :class="{ 'sku-value--active': selectedValueIds.includes(String(value.specValueId)) }"
-              @tap="selectValue(spec.specId, String(value.specValueId), spec.values)"
-            >
-              {{ value.valueName }}
-            </view>
-          </view>
+      <button
+        v-if="shopInfo && String(detail.merchantId) !== '0'"
+        class="shop-entry card"
+        @click="openShop"
+      >
+        <image v-if="shopInfo.logo" class="shop-entry__logo" :src="shopInfo.logo" mode="aspectFill" />
+        <view v-else class="shop-entry__logo shop-entry__logo--empty">
+          <AppIcon type="shop-filled" :size="20" color="#0071e3" />
         </view>
-        <view class="sku-stock">库存以结算页为准，当前规格：{{ selectedSku?.skuSpecText || '请选择' }}</view>
+        <view class="shop-entry__body">
+          <text class="shop-entry__name">{{ shopInfo.merchantName }}</text>
+          <text class="shop-entry__desc">{{ shopInfo.description || '进入店铺查看更多商品' }}</text>
+        </view>
+        <view class="shop-entry__action">
+          <text>进店</text>
+          <AppIcon type="right" :size="14" color="#8a8a8f" />
+        </view>
+      </button>
+
+      <button class="select-row card" @click="skuOpen = true">
+        <text>选择规格</text>
+        <view class="select-row__value">
+          <text>{{ selectedSku?.skuSpecText || '请选择' }}</text>
+          <AppIcon type="right" :size="14" color="#b8b8be" />
+        </view>
+      </button>
+      <view class="service-card card">
+        <view><text>配送</text><text>{{ deliveryNote || deliveryLabel(detail.deliveryType) }}</text></view>
+        <view><text>服务</text><text>{{ serviceGuarantee || '正品保障 · 售后无忧' }}</text></view>
       </view>
 
-      <view class="panel detail-images">
-        <view class="section-title">商品详情</view>
+      <view class="reviews card">
+        <view class="section-head">
+          <text class="section-title">商品评价</text>
+          <button class="section-more section-more--icon" @click="openReviews">
+            <text>全部评价</text>
+            <AppIcon type="right" :size="13" color="#8a8a8f" />
+          </button>
+        </view>
+        <view class="reviews__score">
+          <text class="reviews__number">{{ Number(detail.evaluationScore || 0).toFixed(1) }}</text>
+          <text class="muted">共 {{ detail.evaluationCount || 0 }} 条</text>
+        </view>
+        <view v-for="item in reviews" :key="item.evaluateId || item.id" class="review-row">
+          <text class="review-row__name">{{ item.customerName || '匿名用户' }} {{ item.skuSpecText }}</text>
+          <text class="review-row__content">{{ item.content }}</text>
+        </view>
+      </view>
+
+      <view class="detail-images">
         <image
-          v-for="image in detailImages"
-          :key="image"
+          v-for="(image, index) in detail.detailImages || []"
+          :key="index"
           class="detail-images__image"
           :src="image"
           mode="widthFix"
+          lazy-load
         />
       </view>
+      <view class="bottom-space" />
+    </view>
+    <view v-if="detail" class="buy-bar safe-bottom">
+      <button class="buy-bar__icon" aria-label="购物车" @click="go('/pages/cart/index')">
+        <AppIcon type="cart-filled" :size="22" color="#1a1a1a" />
+      </button>
+      <button class="buy-bar__cart" @click="addToCart">
+        <AppIcon type="cart-filled" :size="17" color="#ffffff" />
+        <text>加入购物车</text>
+      </button>
+      <button class="buy-bar__buy" @click="buyNow">
+        <AppIcon type="wallet" :size="17" color="#ffffff" />
+        <text>立即购买</text>
+      </button>
+    </view>
 
-      <view class="panel evaluation">
-        <view class="section-title">
-          <text>商品评价</text>
-          <text class="evaluation__more" @tap="toEvaluates">查看全部 ›</text>
+    <view v-if="skuOpen" class="sku-overlay" @click.self="skuOpen = false">
+      <view class="sku-sheet safe-bottom">
+        <view class="sku-sheet__head">
+          <image class="sku-sheet__image" :src="selectedSku?.image || detail?.mainImage" mode="aspectFill" />
+          <view>
+            <text class="sku-sheet__price">{{ money(currentPrice) }}</text>
+            <text class="sku-sheet__selected">已选：{{ selectedSku?.skuSpecText || '请选择规格' }}</text>
+          </view>
+          <button aria-label="关闭规格选择" @click="skuOpen = false">
+            <AppIcon type="closeempty" :size="20" color="#8a8a8f" />
+          </button>
         </view>
-        <view v-if="evaluations.length">
-          <view v-for="item in evaluations" :key="item.evaluateId" class="eval-row">
-            <text class="eval-row__name">{{ item.customerName || '匿名用户' }}</text>
-            <text class="eval-row__score">{{ score(item.starScore) }} 分</text>
-            <text class="eval-row__content">{{ item.content }}</text>
+        <view v-for="spec in detail?.specs || []" :key="spec.specId" class="sku-group">
+          <text class="sku-group__title">{{ spec.specName }}</text>
+          <view class="sku-group__values">
+            <button
+              v-for="value in spec.values"
+              :key="value.specValueId"
+              :class="{ active: selectedValueIds.includes(value.specValueId) }"
+              @click="selectValue(spec, value)"
+            >{{ value.valueName }}</button>
           </view>
         </view>
-        <view v-else class="empty">还没有评价</view>
+        <view class="sku-quantity">
+          <text>数量</text>
+          <view class="stepper">
+            <button aria-label="减少数量" @click="quantity = Math.max(1, quantity - 1)"><AppIcon type="minus" :size="14" color="#66666b" /></button>
+            <text>{{ quantity }}</text>
+            <button aria-label="增加数量" @click="quantity = Math.min(99, quantity + 1)"><AppIcon type="plus" :size="14" color="#66666b" /></button>
+          </view>
+        </view>
+        <button class="btn-primary" @click="skuOpen = false">确认</button>
       </view>
-
-      <view class="detail-actions">
-        <button class="detail-actions__cart" @tap="addCart">加入购物车</button>
-        <button class="detail-actions__buy" @tap="buyNow">立即购买</button>
-      </view>
-    </template>
-    <view v-else class="empty">商品不存在或已下架</view>
+    </view>
   </view>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
+import AppHeader from '@/components/AppHeader.vue';
+import AppIcon from '@/components/AppIcon.vue';
 import { request } from '@/core/http';
-import { amount, imageList, score } from '@/core/format';
-import { DELIVERY_NAMES, displayName } from '@/core/dict';
+import { money } from '@/core/format';
+import { usePlatformStore } from '@/stores/platform';
 import { useSessionStore } from '@/stores/session';
 
+const platform = usePlatformStore();
 const session = useSessionStore();
-const loading = ref(true);
-const product = ref<any>(null);
-const selectedValueIds = ref<string[]>([]);
-const evaluations = ref<any[]>([]);
-const favorite = ref(false);
+const detail = ref<any>(null);
+const reviews = ref<any[]>([]);
+const serviceGuarantee = ref('');
+const deliveryNote = ref('');
+const shopInfo = ref<any>(null);
+const selectedValueIds = ref<number[]>([]);
+const selectedSku = ref<any>(null);
+const quantity = ref(1);
+const skuOpen = ref(false);
+const favorited = ref(false);
 const productId = ref('');
+const failedImages = ref<Record<number, boolean>>({});
 
-const gallery = computed(() => {
-  const images = imageList(product.value?.images || '');
-  return images.length ? images : [product.value?.mainImage || ''];
+const images = computed(() => {
+  const rows = detail.value?.images || [];
+  return rows.length ? rows : [detail.value?.mainImage].filter(Boolean);
 });
-const detailImages = computed(() => imageList(product.value?.detailImages || ''));
-const minPrice = computed(() =>
-  Math.min(...(product.value?.skus || []).map((sku: any) => Number(sku.finalPrice || 0))),
-);
-const selectedSku = computed(() => {
-  if (!product.value?.skus?.length) return null;
-  if (!selectedValueIds.value.length) return product.value.skus[0];
-  return product.value.skus.find((sku: any) =>
-    selectedValueIds.value.every((id) => (sku.specValueIds || []).map(String).includes(id)),
-  ) || product.value.skus[0];
-});
-const deliveryName = computed(() => displayName(product.value?.deliveryType, DELIVERY_NAMES));
+const currentPrice = computed(() => Number(selectedSku.value?.finalPrice ?? detail.value?.skus?.[0]?.finalPrice ?? 0));
 
-function selectValue(specId: number, valueId: string, values: any[]) {
-  const sameSpec = new Set(values.map((value) => String(value.specValueId)));
+async function load() {
+  if (!platform.ready) await platform.initialize();
+  session.restore();
+  detail.value = await request<any>('/gateway/shop/products/Detail', {
+    method: 'POST',
+    auth: false,
+    data: {
+      customerId: session.profile?.customerId || '0',
+      productId: productId.value,
+      platformId: platform.platformId,
+    },
+  });
+  selectedSku.value = detail.value.skus?.[0] || null;
+  selectedValueIds.value = [...(selectedSku.value?.specValueIds || [])];
+  const shop = await request<any>(`/gateway/merchants/Shop/${detail.value.merchantId}`, {
+    auth: false,
+    silent: true,
+  }).catch(() => null);
+  shopInfo.value = shop;
+  serviceGuarantee.value = shop?.serviceGuarantee || '';
+  deliveryNote.value = shop?.deliveryNote || '';
+  const page = await request<any>('/gateway/evaluates/List', {
+    method: 'POST',
+    auth: false,
+    data: { spuId: productId.value, page: 1, pageSize: 2 },
+    silent: true,
+  }).catch(() => ({ items: [] }));
+  reviews.value = page.items || [];
+}
+
+function selectValue(spec: any, value: any) {
+  const otherSpecIds = spec.values.map((item: any) => item.specValueId);
   selectedValueIds.value = [
-    ...selectedValueIds.value.filter((id) => !sameSpec.has(id)),
-    valueId,
+    ...selectedValueIds.value.filter((id) => !otherSpecIds.includes(id)),
+    value.specValueId,
   ];
+  const match = (detail.value?.skus || []).find((sku: any) =>
+    selectedValueIds.value.every((id) => sku.specValueIds.includes(id)));
+  if (match) selectedSku.value = match;
+}
+
+async function addToCart() {
+  if (!requireLogin()) return;
+  await request('/gateway/carts/Add', {
+    method: 'POST',
+    data: {
+      customerId: session.profile!.customerId,
+      skuId: selectedSku.value?.skuId,
+      quantity: quantity.value,
+    },
+  });
+  uni.showToast({ title: '已加入购物车', icon: 'success' });
+}
+
+function buyNow() {
+  if (!requireLogin()) return;
+  uni.navigateTo({
+    url: `/pages/checkout/index?skuId=${selectedSku.value?.skuId}&quantity=${quantity.value}`,
+  });
 }
 
 function requireLogin() {
   if (session.loggedIn) return true;
-  uni.navigateTo({ url: '/pages/login/index' });
+  uni.navigateTo({ url: `/pages/login/index?redirect=${encodeURIComponent(`/pages/product/detail?id=${productId.value}`)}` });
   return false;
 }
 
-function addCart() {
-  if (!requireLogin() || !selectedSku.value) return;
-  request('/gateway/carts/Add', {
+async function favorite() {
+  if (!requireLogin()) return;
+  const method = favorited.value ? 'Remove' : 'Add';
+  await request(`/gateway/customers/favorites/${method}`, {
     method: 'POST',
-    data: {
-      customerId: session.profile?.customerId,
-      skuId: selectedSku.value.skuId,
-      delta: 1,
-    },
-  }).then(() => uni.showToast({ title: '已加入购物车', icon: 'success' }));
+    data: { customerId: session.profile!.customerId, spuId: productId.value },
+  });
+  favorited.value = !favorited.value;
 }
 
-function buyNow() {
-  if (!requireLogin() || !selectedSku.value) return;
-  uni.setStorageSync('simpleshop_checkout_lines', [{
-    productId: product.value.productId,
-    skuId: selectedSku.value.skuId,
-    quantity: 1,
-    price: selectedSku.value.finalPrice,
-    skuName: selectedSku.value.skuName || product.value.spuName,
-    skuSpecText: selectedSku.value.skuSpecText,
-  }]);
-  uni.navigateTo({ url: '/pages/checkout/index' });
+function preview(image: string) {
+  uni.previewImage({ current: image, urls: images.value });
 }
 
-function toEvaluates() {
-  uni.navigateTo({ url: `/pages/evaluate/list?productId=${product.value.productId}` });
+function openReviews() {
+  uni.navigateTo({ url: `/pages/evaluate/list?spuId=${productId.value}&title=${encodeURIComponent(detail.value.spuName)}` });
 }
 
-async function load() {
-  loading.value = true;
-  try {
-    product.value = await request<any>('/gateway/shop/products/Detail', {
-      method: 'POST',
-      auth: false,
-      data: {
-        customerId: session.profile?.customerId || '0',
-        productId: productId.value,
-      },
-      silent: true,
-    });
-    if (session.loggedIn && session.profile?.customerId) {
-      const favorites = await request<any>('/gateway/customers/favorites/List', {
-        method: 'POST',
-        data: { customerId: session.profile.customerId, page: 1, pageSize: 50 },
-        silent: true,
-      }).catch(() => null);
-      favorite.value = (favorites?.items || []).some(
-        (item: any) => String(item.spuId) === String(productId.value),
-      );
-    }
-    evaluations.value = await request<any>('/gateway/evaluates/List', {
-      method: 'POST',
-      auth: false,
-      data: { spuId: productId.value, page: 1, pageSize: 3 },
-      silent: true,
-    }).then((result: any) => result?.items || []).catch(() => []);
-  } catch {
-    product.value = null;
-  } finally {
-    loading.value = false;
-  }
+function openShop() {
+  if (!detail.value?.merchantId || String(detail.value.merchantId) === '0') return;
+  uni.navigateTo({ url: `/pages/shop/store?id=${detail.value.merchantId}` });
 }
 
-async function toggleFavorite() {
-  session.restore();
-  if (!session.profile?.customerId) {
-    uni.navigateTo({ url: '/pages/login/index' });
-    return;
-  }
-
-  if (favorite.value) {
-    await request('/gateway/customers/favorites/Remove', {
-      method: 'POST',
-      data: { customerId: session.profile.customerId, spuId: productId.value },
-    });
-    favorite.value = false;
-    uni.showToast({ title: '已取消收藏', icon: 'none' });
-  } else {
-    await request('/gateway/customers/favorites/Add', {
-      method: 'POST',
-      data: { customerId: session.profile.customerId, spuId: productId.value },
-    });
-    favorite.value = true;
-    uni.showToast({ title: '已收藏', icon: 'success' });
-  }
+function go(url: string) {
+  uni.navigateTo({ url });
 }
 
-onLoad((options) => {
-  productId.value = String(options?.id || '');
+function deliveryLabel(type: number) {
+  return type === 2 ? '虚拟商品' : type === 3 ? '到店自提' : '快递配送';
+}
+
+onLoad((query) => {
+  productId.value = String(query?.id || '');
   load();
 });
 </script>
@@ -225,166 +291,423 @@ onLoad((options) => {
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.detail-page {
-  padding-bottom: 180rpx;
+.product-detail {
+  --page-gutter: 0rpx;
+  --page-gutter-negative: 0rpx;
+  min-height: 100vh;
+  padding-bottom: calc(128rpx + env(safe-area-inset-bottom));
 }
 
-.gallery,
+.header-action {
+  width: 88rpx;
+  height: 88rpx;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.product-detail__content {
+  padding: 0 24rpx;
+}
+
+.gallery {
+  overflow: hidden;
+  width: calc(100% + 48rpx);
+  height: 750rpx;
+  margin-left: -24rpx;
+  background: #f0f1f3;
+}
+
 .gallery__image {
   width: 100%;
-  height: 750rpx;
-  border-radius: $radius-lg;
+  height: 100%;
 }
 
-.detail {
-  margin-top: $space-3;
-  padding: $space-4;
+.gallery__fallback {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18rpx;
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.64), transparent),
+    #f1f2f4;
+  color: $muted;
+  font-size: 24rpx;
 }
 
-.detail__name {
-  display: block;
-  font-size: 42rpx;
+.summary {
+  padding: 28rpx 4rpx 24rpx;
+}
+
+.summary__price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12rpx;
+}
+
+.summary__price {
+  color: $price;
+  font-size: 48rpx;
   font-weight: 600;
 }
 
-.detail__sub,
-.detail__score,
-.detail__delivery {
-  display: block;
-  margin-top: $space-1;
-  color: $text-2;
-  font-size: $font-sub;
-}
-
-.detail__meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: $space-1;
-}
-
-.detail__favorite {
-  color: $brand;
-  font-size: $font-sub;
-}
-
-.detail__price {
-  display: flex;
-  align-items: baseline;
-  gap: $space-2;
-  flex-wrap: wrap;
-  margin-top: $space-3;
-}
-
-.detail__amount {
-  font-size: 52rpx;
-}
-
-.detail__original {
-  color: $text-3;
+.summary__original {
+  color: $tertiary;
+  font-size: 24rpx;
   text-decoration: line-through;
 }
 
-.sku-picker,
-.detail-images,
-.evaluation {
-  margin-top: $space-3;
-  padding: $space-4;
+.summary__sales {
+  margin-left: auto;
+  color: $muted;
+  font-size: 22rpx;
 }
 
-.sku-row {
-  margin-bottom: $space-3;
-}
-
-.sku-row__label {
+.summary__title {
   display: block;
-  margin-bottom: $space-2;
+  margin-top: 18rpx;
+  font-size: 34rpx;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.summary__subtitle {
+  display: block;
+  margin-top: 8rpx;
+  color: $muted;
+  font-size: 24rpx;
+}
+
+.summary__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10rpx;
+  margin-top: 18rpx;
+}
+
+.summary__badges text {
+  padding: 6rpx 12rpx;
+  border-radius: 8rpx;
+  background: #f2f4f7;
+  color: #5e6470;
+  font-size: 20rpx;
+}
+
+.select-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 92rpx;
+  padding: 0 24rpx;
+  border: 0;
+  font-size: 26rpx;
+}
+
+.shop-entry {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 16rpx;
+  padding: 18rpx 22rpx;
+  margin-bottom: 20rpx;
+  border: 1rpx solid $line;
+  background: #fff;
+  text-align: left;
+}
+
+.shop-entry__logo {
+  width: 72rpx;
+  height: 72rpx;
+  flex: 0 0 72rpx;
+  border-radius: 18rpx;
+  background: #f2f4f7;
+}
+
+.shop-entry__logo--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shop-entry__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 5rpx;
+  min-width: 0;
+}
+
+.shop-entry__name {
+  overflow: hidden;
+  font-size: 27rpx;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shop-entry__desc {
+  overflow: hidden;
+  color: $muted;
+  font-size: 21rpx;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shop-entry__action {
+  display: flex;
+  align-items: center;
+  gap: 2rpx;
+  color: $brand;
+  font-size: 22rpx;
+}
+
+.select-row__value {
+  display: flex;
+  align-items: center;
+  gap: 2rpx;
+  color: $muted;
+}
+
+.service-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18rpx;
+  padding: 24rpx;
+  margin-top: 20rpx;
+}
+
+.service-card view {
+  display: grid;
+  grid-template-columns: 90rpx 1fr;
+  font-size: 24rpx;
+}
+
+.service-card view text:first-child {
+  color: $muted;
+}
+
+.reviews {
+  padding: 8rpx 24rpx 20rpx;
+  margin-top: 20rpx;
+}
+
+.reviews__score {
+  display: flex;
+  align-items: baseline;
+  gap: 12rpx;
+  padding-bottom: 12rpx;
+}
+
+.reviews__number {
+  font-size: 48rpx;
   font-weight: 600;
 }
 
-.sku-row__values {
+.review-row {
   display: flex;
-  gap: $space-2;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 8rpx;
+  padding: 18rpx 0;
+  border-top: 1rpx solid $line;
 }
 
-.sku-value {
-  padding: 14rpx 28rpx;
-  border: 1rpx solid $hairline;
-  border-radius: 36rpx;
-  background: $bg-page;
-  font-size: $font-sub;
+.review-row__name {
+  color: $muted;
+  font-size: 22rpx;
 }
 
-.sku-value--active {
-  border-color: $brand;
-  background: #eef4ff;
-  color: $brand;
+.review-row__content {
+  font-size: 25rpx;
 }
 
-.sku-stock {
-  color: $text-2;
-  font-size: $font-note;
+.detail-images {
+  margin-top: 20rpx;
 }
 
 .detail-images__image {
-  width: 100%;
-  margin-bottom: $space-2;
-  border-radius: $radius-sm;
-}
-
-.evaluation__more {
-  color: $brand;
-  font-size: $font-note;
-  font-weight: 400;
-}
-
-.eval-row {
-  padding: $space-3 0;
-  border-bottom: 1rpx solid $hairline;
-}
-
-.eval-row__name,
-.eval-row__score,
-.eval-row__content {
   display: block;
+  width: 100%;
 }
 
-.eval-row__score,
-.eval-row__content {
-  margin-top: 8rpx;
-  color: $text-2;
-  font-size: $font-sub;
-}
-
-.detail-actions {
+.buy-bar {
   position: fixed;
   right: 0;
   bottom: 0;
   left: 0;
-  z-index: 20;
+  z-index: 50;
   display: flex;
-  gap: $space-2;
-  padding: $space-2 $space-3 calc(env(safe-area-inset-bottom) + 16rpx);
-  background: rgba(255, 255, 255, 0.96);
+  align-items: center;
+  gap: 16rpx;
+  padding: 14rpx 24rpx;
+  border-top: 1rpx solid $line;
+  background: #fff;
+  box-shadow: $shadow-float;
 }
 
-.detail-actions__cart,
-.detail-actions__buy {
-  flex: 1;
+.buy-bar button {
   height: 84rpx;
-  border-radius: 42rpx;
-  font-size: $font-body;
-  line-height: 84rpx;
+  border: 0;
+  border-radius: 999rpx;
 }
 
-.detail-actions__cart {
-  background: #eef4ff;
-  color: $brand;
+.buy-bar__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 88rpx;
+  flex: 0 0 88rpx;
+  background: #f2f3f5;
 }
 
-.detail-actions__buy {
-  background: $brand;
+.buy-bar__cart,
+.buy-bar__buy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  flex: 1;
   color: #fff;
+  font-size: 27rpx;
+}
+
+.buy-bar__cart {
+  background: linear-gradient(90deg, #ffc53d, #ff9f0a);
+}
+
+.buy-bar__buy {
+  background: linear-gradient(90deg, #ff9f0a, #ff3b30);
+}
+
+.sku-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.sku-sheet {
+  width: 100%;
+  max-height: 78vh;
+  overflow: auto;
+  padding: 24rpx;
+  border-radius: 24rpx 24rpx 0 0;
+  background: #fff;
+}
+
+.sku-sheet__head {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+}
+
+.sku-sheet__image {
+  width: 150rpx;
+  height: 150rpx;
+  border-radius: 16rpx;
+}
+
+.sku-sheet__head > view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10rpx;
+}
+
+.sku-sheet__head button {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: $muted;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sku-sheet__price {
+  color: $price;
+  font-size: 38rpx;
+  font-weight: 600;
+}
+
+.sku-sheet__selected {
+  color: $muted;
+  font-size: 23rpx;
+}
+
+.sku-group {
+  margin-top: 26rpx;
+}
+
+.sku-group__title {
+  font-size: 26rpx;
+  font-weight: 500;
+}
+
+.sku-group__values {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12rpx;
+  width: 100%;
+  margin-top: 14rpx;
+}
+
+.sku-group__values button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 62rpx;
+  padding: 0 24rpx;
+  border: 1rpx solid $line;
+  border-radius: 999rpx;
+  background: #fff;
+  font-size: 23rpx;
+  margin: 0;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.sku-group__values button.active {
+  border-color: $selection-border;
+  background: $selection-bg;
+  color: $selection-text;
+  font-weight: 500;
+}
+
+.sku-quantity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 28rpx 0;
+}
+
+.stepper {
+  display: flex;
+  overflow: hidden;
+  border-radius: 12rpx;
+  background: #f2f3f5;
+}
+
+.stepper button,
+.stepper text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64rpx;
+  height: 58rpx;
+}
+
+.stepper button {
+  border: 0;
+  background: transparent;
 }
 </style>

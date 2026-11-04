@@ -16,6 +16,8 @@ namespace MerchantPlatformService.Application.Features.Merchant;
 /// <param name="Description">店铺简介，C 端店铺页展示。</param>
 /// <param name="Status">1 启用 / 2 停用。默认 2。</param>
 /// <param name="Remark">备注。</param>
+/// <param name="ServiceGuarantee">服务保障文案，商品详情页展示。</param>
+/// <param name="DeliveryNote">配送说明文案，商品详情页展示。</param>
 public record CreateMerchantCommand(
     string MerchantName,
     long PlatformId,
@@ -24,7 +26,9 @@ public record CreateMerchantCommand(
     string Logo = "",
     string Description = "",
     int Status = 2,
-    string Remark = "") : IRequest<ApiResponse<long>>;
+    string Remark = "",
+    string ServiceGuarantee = "",
+    string DeliveryNote = "") : IRequest<ApiResponse<long>>;
 
 /// <summary>编辑商户。</summary>
 /// <remarks>
@@ -40,6 +44,8 @@ public record CreateMerchantCommand(
 /// <param name="Description">店铺简介。</param>
 /// <param name="Status">1 启用 / 2 停用。</param>
 /// <param name="Remark">备注。</param>
+/// <param name="ServiceGuarantee">服务保障文案，商品详情页展示。</param>
+/// <param name="DeliveryNote">配送说明文案，商品详情页展示。</param>
 public record UpdateMerchantCommand(
     long MerchantId,
     string MerchantName,
@@ -49,7 +55,9 @@ public record UpdateMerchantCommand(
     string Logo = "",
     string Description = "",
     int Status = 2,
-    string Remark = "") : IRequest<ApiResponse>;
+    string Remark = "",
+    string ServiceGuarantee = "",
+    string DeliveryNote = "") : IRequest<ApiResponse>;
 
 /// <summary>商户审核。</summary>
 /// <param name="MerchantId">商户 Id。</param>
@@ -139,12 +147,15 @@ public record QueryPublicShopsCommand(
 /// <param name="MerchantName">店铺名。</param>
 /// <param name="Logo">店铺 Logo。</param>
 /// <param name="Description">店铺简介。</param>
+/// <param name="ServiceGuarantee">服务保障文案（商品详情页展示）。</param>
+/// <param name="DeliveryNote">配送说明文案（商品详情页展示）。</param>
 /// <param name="PlatformId">所属平台 Id。</param>
 /// <param name="PlatformName">平台名。</param>
 /// <param name="Rating">店铺评分（只统计有评价商品的均分），两位小数。</param>
 public sealed record PublicShopDto(
     long MerchantId, string MerchantName, string Logo, string Description,
-    long PlatformId, string PlatformName, decimal Rating);
+    long PlatformId, string PlatformName, decimal Rating,
+    string ServiceGuarantee, string DeliveryNote);
 
 /// <summary>小程序店铺分页结果。</summary>
 /// <param name="Items">当前页店铺。</param>

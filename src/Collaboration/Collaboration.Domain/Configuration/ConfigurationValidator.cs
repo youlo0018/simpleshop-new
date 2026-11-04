@@ -54,6 +54,9 @@ public static class ConfigurationValidator
         }
     }
 
+    /// <summary>所有服务共用的必需配置项（连接串 / 服务发现 / 消息中间件）。</summary>
+    /// <returns>必需键列表。</returns>
+    /// <remarks>无库服务（网关、定时任务）用 <c>exemptBaseKeys</c> 显式豁免数据库连接串。</remarks>
     private static IReadOnlyList<string> BuildBaseKeys()
     {
         var keys = new List<string>();

@@ -64,6 +64,14 @@ public class PromotionActivity : AdminEntityBase
     [Column(Name = "targets", StringLength = 4096)]
     public string Targets { get; set; } = "[]";
 
+    /// <summary>活动主图 URL（小程序活动卡片展示）。</summary>
+    [Column(Name = "cover_image", StringLength = 512)]
+    public string CoverImage { get; set; } = string.Empty;
+
+    /// <summary>活动说明 / 规则（小程序活动商品列表页头部展示）。</summary>
+    [Column(Name = "description", StringLength = 1000)]
+    public string Description { get; set; } = string.Empty;
+
     /// <summary>开始时间（UTC）。</summary>
     [Column(Name = "start_time")]
     public DateTime StartTime { get; set; }

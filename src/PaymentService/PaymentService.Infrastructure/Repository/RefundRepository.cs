@@ -82,6 +82,22 @@ public sealed class RefundRepository : CrudRepository<RefundOrder>, IRefundRepos
     }
 
     /// <inheritdoc />
+    public async Task<decimal> SumRefundedAmountAsync(
+        string orderNo, bool includePending = false, CancellationToken ct = default)
+    {
+        int[] statuses = includePending
+            ? [RefundStatuses.PendingApproval, RefundStatuses.Refunded]
+            : [RefundStatuses.Refunded];
+
+        var total = await Db.Select<RefundOrder>()
+            .Where(a => a.OrderNo == orderNo && statuses.Contains(a.Status))
+            .SumAsync(a => a.Amount)
+            .ConfigureAwait(false);
+
+        return total;
+    }
+
+    /// <inheritdoc />
     public async Task<PagedRefunds> PageAsync(int status, string orderNo, string keyword, int page, int pageSize,
         CancellationToken ct = default)
     {
@@ -114,6 +130,44 @@ public sealed class RefundRepository : CrudRepository<RefundOrder>, IRefundRepos
     }
 
     /// <inheritdoc />
+    public async Task<PagedRefunds> PageByCustomerAsync(
+        long customerId, int status, int page, int pageSize, CancellationToken ct = default)
+    {
+        var query = Db.Select<RefundOrder>()
+            .Where(a => a.CustomerId == customerId)
+            .Where(a => status <= 0 || a.Status == status);
+
+        var safePage = Math.Max(1, page);
+        var safeSize = Math.Clamp(pageSize, 1, 50);
+
+        var total = await query.CountAsync(ct);
+        if (total == 0) return new PagedRefunds([], 0, safePage, safeSize);
+
+        var items = await query
+            .OrderByDescending(a => a.CreatedAt)
+            .OrderByDescending(a => a.Id)
+            .Page(safePage, safeSize)
+            .ToListAsync(ct);
+
+        return new PagedRefunds(items, total, safePage, safeSize);
+    }
+
+    /// <inheritdoc />
+    public async Task<int> TryCancelAsync(
+        long refundId, long customerId, CancellationToken ct = default)
+        => await Db.Update<RefundOrder>()
+            // 归属与状态都进 WHERE：不存在 / 非本人 / 已处理 一律影响 0 行
+            .Where(a => a.Id == refundId
+                        && a.CustomerId == customerId
+                        && a.Status == RefundStatuses.PendingApproval)
+            .Set(a => new RefundOrder
+            {
+                Status = RefundStatuses.Withdrawn,
+                UpdatedAt = DateTime.UtcNow
+            })
+            .ExecuteAffrowsAsync(ct);
+
+    /// <inheritdoc />
     public async Task<int> TryApproveAsync(long refundId, int expectedStatus, int newStatus,
         long approverId, string approverName, string rejectReason, CancellationToken ct = default)
         => await Db.Update<RefundOrder>()
@@ -128,6 +182,25 @@ public sealed class RefundRepository : CrudRepository<RefundOrder>, IRefundRepos
                 UpdatedAt = DateTime.UtcNow
             })
             .ExecuteAffrowsAsync(ct);
+
+    /// <inheritdoc />
+    public async Task<int> MarkOrderSyncedAsync(long refundId, CancellationToken ct = default)
+        => await Db.Update<RefundOrder>()
+            .Where(a => a.Id == refundId && a.OrderSynced == false)
+            .Set(a => new RefundOrder { OrderSynced = true, UpdatedAt = DateTime.UtcNow })
+            .ExecuteAffrowsAsync(ct)
+            .ConfigureAwait(false);
+
+    /// <inheritdoc />
+    public async Task<List<RefundOrder>> ListUnsyncedApprovedAsync(
+        int limit, CancellationToken ct = default)
+        => await Db.Select<RefundOrder>()
+            .Where(a => a.Status == RefundStatuses.Refunded && a.OrderSynced == false)
+            // 先处理欠得最久的：审批时间早的先同步
+            .OrderBy(a => a.ApprovedAt).OrderBy(a => a.Id)
+            .Limit(Math.Clamp(limit, 1, 500))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
 
     /// <inheritdoc />
     public async Task<decimal> SumApprovedAmountAsync(

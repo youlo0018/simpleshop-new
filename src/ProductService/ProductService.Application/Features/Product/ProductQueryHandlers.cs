@@ -82,6 +82,10 @@ public sealed class ChangeProductAuditHandler : IRequestHandler<ChangeProductAud
         }
     }
 
+    /// <summary>把本次驳回原因追加到已有备注上（保留历史驳回记录，不覆盖）。</summary>
+    /// <param name="existing">已有备注。</param>
+    /// <param name="reason">本次驳回原因。</param>
+    /// <returns>追加后的备注。</returns>
     private static string AppendReason(string existing, string reason)
     {
         var text = $"[审核驳回] {reason}";

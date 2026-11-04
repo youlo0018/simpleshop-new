@@ -79,7 +79,8 @@ async function load() {
         skuSpecText: sku.skuSpecText,
         available: Number(stock?.available || 0),
         warnThreshold: Number(stock?.warnThreshold || 0),
-        availableAdjust: 0,
+        // 调整量留空而不是预填 0：0 是「不调整」，预填后容易一路点提交却什么都没发生
+        availableAdjust: '',
         remark: '',
       };
     });

@@ -55,7 +55,10 @@ public class GiftGrantPlannerTests
         var activities = new[] { Activity(7, giftTemplateId: 901, giftQuantity: 3) };
         var lines = new[] { new PromotionLine(100, 1001, 200m) };
 
-        var hit = GiftGrantPlanner.FindHitGiftActivity(activities, lines, Now, giftHit: true);
+        // 判定由优惠引擎的逐行结论给出（GiftActivityId），规划器只负责把实体找回来
+        var result = PromotionCalculator.Calculate(
+            lines, activities, Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
+        var hit = GiftGrantPlanner.FindHitGiftActivity(activities, result.GiftActivityId);
 
         Assert.NotNull(hit);
         Assert.Equal(7, hit!.Id);
@@ -66,18 +69,15 @@ public class GiftGrantPlannerTests
     [Fact]
     public void 优惠引擎没判命中时不承诺()
     {
-        // 有满减可用时满赠让位（BUSINESS.md 11.2），此时不能承诺赠品券
-        var activities = new[] { Activity(7) };
-        var lines = new[] { new PromotionLine(100, 1001, 200m) };
-
-        Assert.Null(GiftGrantPlanner.FindHitGiftActivity(activities, lines, Now, giftHit: false));
+        // 引擎没给满赠 Id（没有活动 / 没命中）时不能承诺赠品券
+        Assert.Null(GiftGrantPlanner.FindHitGiftActivity([Activity(7)], 0));
     }
 
     [Fact]
     public void 有正数折扣活动时满赠不中_即使调用方误报命中()
     {
-        // 兜底：即使上游把 giftHit 传成 true，这里也会发现真正命中的是满减而不是满赠。
-        // 两个判断各写一份的话，就会出现「引擎说命中满减、发券说命中满赠」。
+        // 兜底：逐行引擎会判定真正命中的是满减，GiftActivityId 为 0，
+        // 规划器拿到 0 就不会承诺 —— 判定只有引擎一处，不会「引擎说满减、发券说满赠」。
         var activities = new[]
         {
             Activity(7, ActivityTypes.FullReduction, threshold: 100m, amount: 20m),
@@ -85,7 +85,11 @@ public class GiftGrantPlannerTests
         };
         var lines = new[] { new PromotionLine(100, 1001, 200m) };
 
-        Assert.Null(GiftGrantPlanner.FindHitGiftActivity(activities, lines, Now, giftHit: true));
+        var result = PromotionCalculator.Calculate(
+            lines, activities, Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
+
+        Assert.Equal(0, result.GiftActivityId);
+        Assert.Null(GiftGrantPlanner.FindHitGiftActivity(activities, result.GiftActivityId));
     }
 
     [Fact]
@@ -94,7 +98,11 @@ public class GiftGrantPlannerTests
         var activities = new[] { Activity(7, threshold: 500m) };
         var lines = new[] { new PromotionLine(100, 1001, 200m) };
 
-        Assert.Null(GiftGrantPlanner.FindHitGiftActivity(activities, lines, Now, giftHit: true));
+        var result = PromotionCalculator.Calculate(
+            lines, activities, Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
+
+        Assert.Equal(0, result.GiftActivityId);
+        Assert.Null(GiftGrantPlanner.FindHitGiftActivity(activities, result.GiftActivityId));
     }
 
     [Fact]
@@ -103,7 +111,11 @@ public class GiftGrantPlannerTests
         var activities = new[] { Activity(7, end: Now.AddHours(-1)) };
         var lines = new[] { new PromotionLine(100, 1001, 200m) };
 
-        Assert.Null(GiftGrantPlanner.FindHitGiftActivity(activities, lines, Now, giftHit: true));
+        var result = PromotionCalculator.Calculate(
+            lines, activities, Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
+
+        Assert.Equal(0, result.GiftActivityId);
+        Assert.Null(GiftGrantPlanner.FindHitGiftActivity(activities, result.GiftActivityId));
     }
 
     [Fact]

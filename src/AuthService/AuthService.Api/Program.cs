@@ -55,19 +55,23 @@ builder.Services.AddDbContext<AuthDbContext>(options =>
 
 // 下游地址一律来自配置，代码里不出现端口。
 // 两个下游用两个具名 HttpClient，解析器从工厂各取一个，不会互相串地址。
+builder.Services.AddInternalTokenPropagation();
+
 builder.Services.AddHttpClient(UserServiceClient)
     .ConfigureHttpClient((sp, client) =>
     {
         client.BaseAddress = new Uri(Require(sp.GetRequiredService<IConfiguration>(), UserServiceUrlKey).TrimEnd('/') + "/");
         client.Timeout = downstreamTimeout;
-    });
+    })
+    .AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddHttpClient(PermissionServiceClient)
     .ConfigureHttpClient((sp, client) =>
     {
         client.BaseAddress = new Uri(Require(sp.GetRequiredService<IConfiguration>(), PermissionServiceUrlKey).TrimEnd('/') + "/");
         client.Timeout = downstreamTimeout;
-    });
+    })
+    .AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddSingleton<IAdminIdentityResolver>(sp =>
 {

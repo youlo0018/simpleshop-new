@@ -102,7 +102,14 @@ foreach ($s in $scripts) {
     # 6>&1 是必须的：子脚本用 Write-Host 打结果，而 Write-Host 走的是**信息流**（stream 6），
     # 不是标准输出。不接住它的话 $output 永远是空串，汇总表全是 0——
     # 一张全 0 的表比没有表更糟，它让人以为「没跑」。
+    #
+    # 子脚本会给 Invoke-RestMethod 设默认头（直连 /internal 的内部口令），
+    # 而 $PSDefaultParameterValues 会泄漏到同一 session 的后续脚本 ——
+    # 实测：customer 跑完后 log-regression 直连 Elasticsearch 的请求也会带上内部口令。
+    # 执行前后各清一次，把「内部口令只用于内部接口」这件事保住。
+    $PSDefaultParameterValues.Remove('Invoke-RestMethod:Headers')
     $output = (& $s.FullName 6>&1 2>&1 | Out-String)
+    $PSDefaultParameterValues.Remove('Invoke-RestMethod:Headers')
     $code = $LASTEXITCODE
 
     # 取最后一段「通过: N 失败: M」。有的脚本会打印多段汇总，取最后一次。

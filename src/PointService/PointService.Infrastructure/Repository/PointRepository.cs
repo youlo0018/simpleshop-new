@@ -1,7 +1,6 @@
 using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.Repository;
 using FreeSql;
-using Npgsql;
 using PointService.Domain.Entities;
 using PointService.Domain.IRepository;
 using PointService.Domain.Services;
@@ -276,11 +275,19 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
 
     /// <inheritdoc />
     public async Task<PointOutcome> RefundAsync(
-        long customerId, string bizNo, decimal refundRatio, string remark = "", CancellationToken ct = default)
+        long customerId, string bizNo, string refundNo, decimal refundRatio,
+        string remark = "", CancellationToken ct = default)
     {
         if (refundRatio <= 0m || refundRatio > 1m)
         {
             return new PointOutcome(false, false, 0, 0, Error: "退款比例必须在 0 ~ 1 之间");
+        }
+
+        if (string.IsNullOrWhiteSpace(refundNo))
+        {
+            // 没有退款单号就没有「这次退款」的身份，第二次部分退款必然被幂等吞掉。
+            // 宁可让调用方报错，也不要把该收的积分静默丢掉。
+            return new PointOutcome(false, false, 0, 0, Error: "缺少退款单号");
         }
 
         return await RunIdempotentAsync(customerId, bizNo, PointActions.Refund, ct, () =>
@@ -299,7 +306,11 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
 
             // 部分退款按比例回收，**向上取整**（BUSINESS.md 10.3）。
             // 向上取整对用户不利、对平台有利：退钱少退一点时积分也多扣一点。
-            // 同一笔订单多次退款要累计，所以先扣掉已回收的部分。
+            //
+            // 🔴 同一订单多次部分退款要按**累计**口径回收：
+            // 本次应收 = 已回收 + ceil(总冻结 × 本次比例)，再封顶总冻结。
+            // 只按本次比例算（ceil(总冻结 × 本次比例) − 已回收）会在第二次退款时算少甚至算成负数，
+            // 实测第二个部分退款回收 0 分。幂等由退款单号保证（见 RunIdempotentAsync）。
             var want = (long)Math.Ceiling(lockRow.Quantity * (double)refundRatio);
             if (want > lockRow.Quantity) want = lockRow.Quantity;
 
@@ -308,7 +319,7 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
                 .ToList()
                 .Sum(a => a.Quantity);
 
-            var actual = want - refunded;
+            var actual = Math.Min(lockRow.Quantity, refunded + want) - refunded;
             if (actual <= 0)
             {
                 return new PointOutcome(true, true, before.Available, before.Frozen, before.TotalEarned, before.TotalUsed);
@@ -338,9 +349,10 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
             _db.Update<PointLock>().Where(a => a.Id == lockRow.Id)
                 .Set(a => new PointLock { Status = PointLockStatus.Refunded }).ExecuteAffrows();
 
-            WriteRecord(customerId, bizNo, PointActions.Refund, actual, before, after, null, remark);
+            WriteRecord(customerId, bizNo, PointActions.Refund, actual, before, after, null, remark,
+                refundNo.Trim());
             return new PointOutcome(true, false, after.Available, after.Frozen, after.TotalEarned, after.TotalUsed);
-        });
+        }, refundNo.Trim());
     }
 
     /// <inheritdoc />
@@ -480,7 +492,7 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
                 result = new PointOutcome(true, false, after.Available, after.Frozen, after.TotalEarned, after.TotalUsed, capped);
             }), ct);
         }
-        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+        catch (Exception ex) when (PostgresErrors.IsUniqueViolation(ex))
         {
             already = true;
             var acc = await _db.Select<PointAccount>().Where(a => a.CustomerId == customerId).FirstAsync(ct);
@@ -497,6 +509,20 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
         var account = await _db.Select<PointAccount>().Where(a => a.CustomerId == customerId).FirstAsync(ct);
         return account;
     }
+
+    /// <inheritdoc />
+    public async Task<List<PointLot>> ListExpiringLotsAsync(
+        long customerId, DateTime nowUtc, DateTime beforeUtc,
+        CancellationToken ct = default)
+        => await _db.Select<PointLot>()
+            .Where(a => a.CustomerId == customerId
+                        && a.Remaining > 0
+                        && a.ExpireAt > nowUtc
+                        && a.ExpireAt < beforeUtc)
+            .OrderBy(a => a.ExpireAt)
+            .OrderBy(a => a.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
 
     /// <inheritdoc />
     public async Task<(List<PointRecord> Items, long Total)> QueryRecordsAsync(
@@ -571,6 +597,9 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
     /// <summary>账户余额快照。流水里「变动前 / 变动后」都从这里派生，不用更新后的对象反推。</summary>
     private readonly record struct AccountSnapshot(long Available, long Frozen, long TotalEarned, long TotalUsed);
 
+    /// <summary>把账户实体压成余额快照（流水里的「变动前 / 变动后」都由它派生）。</summary>
+    /// <param name="a">积分账户。</param>
+    /// <returns>四个计数的快照。</returns>
     private static AccountSnapshot Snapshot(PointAccount a)
         => new(a.Available, a.Frozen, a.TotalEarned, a.TotalUsed);
 
@@ -582,9 +611,15 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
     /// <param name="action">动作。</param>
     /// <param name="ct">取消令牌。</param>
     /// <param name="core">业务逻辑，返回结果。</param>
+    /// <param name="refundNo">
+    /// 退款单号，只有退款动作用得上；其余动作传空串。
+    /// 幂等键是 (customer, bizNo, action, refundNo)：同一订单的多次部分退款
+    /// 各带各的退款单号，不会被彼此当成重复请求。
+    /// </param>
     /// <returns>结果。</returns>
     private async Task<PointOutcome> RunIdempotentAsync(
-        long customerId, string bizNo, string action, CancellationToken ct, Func<PointOutcome> core)
+        long customerId, string bizNo, string action, CancellationToken ct, Func<PointOutcome> core,
+        string refundNo = "")
     {
         // Db.Transaction 的委托返回 void，结果只能在外面接
         var result = new PointOutcome(false, false, 0, 0, Error: "未执行");
@@ -595,7 +630,8 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
             {
                 // 已经处理过就直接返回首次结果，不重复变更
                 var existing = _db.Select<PointRecord>()
-                    .Where(a => a.CustomerId == customerId && a.BizNo == bizNo && a.Action == action)
+                    .Where(a => a.CustomerId == customerId && a.BizNo == bizNo
+                                && a.Action == action && a.RefundNo == refundNo)
                     .First();
 
                 if (existing is not null)
@@ -609,7 +645,7 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
                 result = core();
             }), ct);
         }
-        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+        catch (Exception ex) when (PostgresErrors.IsUniqueViolation(ex))
         {
             // 并发下另一个请求刚写了同一条流水
             var acc = await _db.Select<PointAccount>().Where(a => a.CustomerId == customerId).FirstAsync(ct);
@@ -623,6 +659,14 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
     private PointAccount? RequireAccount(long customerId)
         => _db.Select<PointAccount>().Where(a => a.CustomerId == customerId).First();
 
+    /// <summary>取客户积分账户；没有就建一个（并发撞唯一键时改读已存在的那条）。</summary>
+    /// <param name="customerId">客户 Id。</param>
+    /// <param name="created">输出：本次是否真的新建了账户。</param>
+    /// <returns>积分账户。</returns>
+    /// <remarks>
+    /// 「先查再插」在并发下必然有两个请求都查不到，所以插入必须带唯一键兜底
+    /// （<c>uk_point_account_customer</c>），撞了就回读。
+    /// </remarks>
     private PointAccount GetOrCreateAccount(long customerId, out bool created)
     {
         var existing = _db.Select<PointAccount>().Where(a => a.CustomerId == customerId).First();
@@ -644,11 +688,12 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
             _db.Insert(account).ExecuteAffrows();
             created = true;
         }
-        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+        catch (Exception ex) when (PostgresErrors.IsUniqueViolation(ex))
         {
             created = false;
             account = _db.Select<PointAccount>().Where(a => a.CustomerId == customerId).First()
-                ?? throw new InvalidOperationException($"客户 {customerId} 的积分账户并发创建后仍查不到。", ex);
+                ?? throw new InvalidOperationException(
+                    $"客户 {customerId} 的积分账户并发创建后仍查不到。", PostgresErrors.Unwrap(ex) ?? ex);
         }
 
         return account;
@@ -684,7 +729,8 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
 
     private void WriteRecord(
         long customerId, string bizNo, string action, long quantity,
-        AccountSnapshot before, AccountSnapshot after, DateTime? lotExpireAt, string remark)
+        AccountSnapshot before, AccountSnapshot after, DateTime? lotExpireAt, string remark,
+        string refundNo = "")
     {
         _db.Insert(new PointRecord
         {
@@ -692,6 +738,7 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
             CreatedAt = DateTime.UtcNow,
             CustomerId = customerId,
             BizNo = bizNo,
+            RefundNo = refundNo ?? string.Empty,
             Action = action,
             Quantity = quantity,
             BeforeAvailable = before.Available,
@@ -703,6 +750,10 @@ public sealed class PointRepository : CrudRepository<PointAccount>, IPointReposi
         }).ExecuteAffrows();
     }
 
+    /// <summary>构造失败结果（计数全 0，只有错误消息有意义）。</summary>
+    /// <param name="customerId">客户 Id（保留参数便于将来回填余额）。</param>
+    /// <param name="error">中文错误消息。</param>
+    /// <returns>失败结果。</returns>
     private static PointOutcome Fail(long customerId, string error)
         => new(false, false, 0, 0, Error: error);
 

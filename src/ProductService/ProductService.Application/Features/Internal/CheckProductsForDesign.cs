@@ -1,10 +1,9 @@
 using Collaboration.Domain.Common;
 using FluentValidation;
-using FreeSql;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using ProductService.Domain.Entities;
-using ProductEntity = ProductService.Domain.Entities.Product;
+using ProductService.Domain.IRepository;
 
 namespace ProductService.Application.Features.Internal;
 
@@ -69,11 +68,11 @@ public static class CheckProductsForDesignValidators
 public sealed class CheckProductsForDesignHandler
     : IRequestHandler<CheckProductsForDesignCommand, ApiResponse<CheckProductsForDesignResult>>
 {
-    private readonly IFreeSql _db;
+    private readonly IProductRepository _products;
 
     /// <summary>构造处理器。</summary>
-    /// <param name="db">FreeSql 实例。</param>
-    public CheckProductsForDesignHandler(IFreeSql db) => _db = db;
+    /// <param name="products">商品仓储。</param>
+    public CheckProductsForDesignHandler(IProductRepository products) => _products = products;
 
     /// <summary>执行校验。</summary>
     /// <param name="request">命令。</param>
@@ -85,10 +84,7 @@ public sealed class CheckProductsForDesignHandler
         // 去重但保持传入顺序：后台回显时按用户勾选的顺序列出更容易对应
         var ids = request.ProductIds.Distinct().ToList();
 
-        var rows = await _db.Select<ProductEntity>()
-            .Where(a => ids.Contains(a.Id))
-            .ToListAsync(a => new { a.Id, a.PlatformId, a.MerchantId, a.AuditStatus, a.Status }, ct)
-            .ConfigureAwait(false);
+        var rows = await _products.GetByIdsAsync(ids, ct).ConfigureAwait(false);
 
         var byId = rows.ToDictionary(a => a.Id);
         var checkable = new List<long>();

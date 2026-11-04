@@ -45,6 +45,8 @@
     <ProjectReference Include="..\..\src\OrderService\OrderService.Application\OrderService.Application.csproj" />
     <!-- 只引用 Domain：死信重放上限等纯规则 -->
     <ProjectReference Include="..\..\src\LogService\LogService.Domain\LogService.Domain.csproj" />
+    <!-- 商品搜索同义词：纯查询扩展逻辑，不依赖 Elasticsearch -->
+    <ProjectReference Include="..\..\src\ProductService\ProductService.Application\ProductService.Application.csproj" />
   </ItemGroup>
 
 </Project>

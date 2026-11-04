@@ -20,6 +20,8 @@ public static class PlatformValidators
         services.AddScoped<IValidator<UpdatePlatformCommand>, UpdatePlatformValidator>();
         services.AddScoped<IValidator<DeletePlatformCommand>, DeletePlatformValidator>();
         services.AddScoped<IValidator<QueryPlatformsCommand>, QueryPlatformsValidator>();
+        services.AddScoped<IValidator<QueryPublicPlatformsQuery>, QueryPublicPlatformsValidator>();
+        services.AddScoped<IValidator<QueryPublicPlatformDetailQuery>, QueryPublicPlatformDetailValidator>();
     }
 
     /// <summary>创建平台校验。</summary>
@@ -42,6 +44,14 @@ public static class PlatformValidators
             RuleFor(x => x.PrimaryColor).Must(v => MerchantRules.ValidateColor(v) == null).WithMessage("主题色格式不正确");
             RuleFor(x => x.TabColor).Must(v => MerchantRules.ValidateColor(v) == null).WithMessage("TabBar 选中色格式不正确");
             RuleFor(x => x.BackgroundColor).Must(v => MerchantRules.ValidateColor(v) == null).WithMessage("背景色格式不正确");
+            RuleFor(x => x.ShareTitle).MaximumLength(128).WithMessage("分享标题最多 128 个字符");
+            RuleFor(x => x.ShareImage).MaximumLength(512).WithMessage("分享图地址过长");
+            RuleFor(x => x.ServiceWechat).MaximumLength(64).WithMessage("客服微信最多 64 个字符");
+            RuleFor(x => x.ServicePhone).MaximumLength(20).WithMessage("客服电话最多 20 个字符");
+            RuleFor(x => x.UserAgreement).MaximumLength(20000).WithMessage("用户协议最多 20000 个字符");
+            RuleFor(x => x.PrivacyPolicy).MaximumLength(20000).WithMessage("隐私政策最多 20000 个字符");
+            RuleFor(x => x.IcpNo).MaximumLength(64).WithMessage("ICP 备案号最多 64 个字符");
+            RuleFor(x => x.MallIntro).MaximumLength(1000).WithMessage("商城简介最多 1000 个字符");
         }
     }
 
@@ -65,6 +75,14 @@ public static class PlatformValidators
             RuleFor(x => x.PrimaryColor).Must(v => MerchantRules.ValidateColor(v) == null).WithMessage("主题色格式不正确");
             RuleFor(x => x.TabColor).Must(v => MerchantRules.ValidateColor(v) == null).WithMessage("TabBar 选中色格式不正确");
             RuleFor(x => x.BackgroundColor).Must(v => MerchantRules.ValidateColor(v) == null).WithMessage("背景色格式不正确");
+            RuleFor(x => x.ShareTitle).MaximumLength(128).WithMessage("分享标题最多 128 个字符");
+            RuleFor(x => x.ShareImage).MaximumLength(512).WithMessage("分享图地址过长");
+            RuleFor(x => x.ServiceWechat).MaximumLength(64).WithMessage("客服微信最多 64 个字符");
+            RuleFor(x => x.ServicePhone).MaximumLength(20).WithMessage("客服电话最多 20 个字符");
+            RuleFor(x => x.UserAgreement).MaximumLength(20000).WithMessage("用户协议最多 20000 个字符");
+            RuleFor(x => x.PrivacyPolicy).MaximumLength(20000).WithMessage("隐私政策最多 20000 个字符");
+            RuleFor(x => x.IcpNo).MaximumLength(64).WithMessage("ICP 备案号最多 64 个字符");
+            RuleFor(x => x.MallIntro).MaximumLength(1000).WithMessage("商城简介最多 1000 个字符");
         }
     }
 
@@ -85,6 +103,28 @@ public static class PlatformValidators
             RuleFor(x => x.Status).InclusiveBetween(0, 2).WithMessage("状态不正确");
             RuleFor(x => x.Page).GreaterThanOrEqualTo(1).WithMessage("页码不正确");
             RuleFor(x => x.PageSize).InclusiveBetween(1, 100).WithMessage("每页条数不正确");
+        }
+    }
+
+    /// <summary>小程序平台列表校验（无参数，仅满足「列表查询必须有校验器」的约定）。</summary>
+    private sealed class QueryPublicPlatformsValidator : AbstractValidator<QueryPublicPlatformsQuery>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryPublicPlatformsValidator()
+        {
+        }
+    }
+
+    /// <summary>公开平台详情校验。</summary>
+    private sealed class QueryPublicPlatformDetailValidator
+        : AbstractValidator<QueryPublicPlatformDetailQuery>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryPublicPlatformDetailValidator()
+        {
+            RuleFor(x => x.PlatformCode)
+                .Must(v => MerchantRules.ValidatePlatformCode(v) == null)
+                .WithMessage("平台编码必须是 6 位字母");
         }
     }
 }

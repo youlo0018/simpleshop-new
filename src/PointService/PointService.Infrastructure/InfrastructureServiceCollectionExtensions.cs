@@ -15,6 +15,7 @@ public static class InfrastructureServiceCollectionExtensions
     public static IServiceCollection AddInfrastructure(this IServiceCollection services)
     {
         services.AddScoped<IPointRepository, PointRepository>();
+        services.AddScoped<IPointRuleConfigRepository, PointRuleConfigRepository>();
 
         // Singleton：规则快照带 30 秒缓存，必须跨请求复用，
         // 否则「缓存」根本不起作用，每次调用都变成一次数据库查询。

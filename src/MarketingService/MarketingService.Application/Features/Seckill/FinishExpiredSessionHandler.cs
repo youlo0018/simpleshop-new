@@ -52,12 +52,19 @@ public sealed class FinishExpiredSessionsHandler
         FinishExpiredSessionsCommand request, CancellationToken ct)
     {
         var limit = Math.Clamp(request.Limit, 1, 500);
+        var nowUtc = DateTime.UtcNow;
 
-        var expired = await _seckill
-            .ListExpiredRunningSessionsAsync(DateTime.UtcNow, limit, ct)
+        // 先捞「状态已结束但库存没还完」的场次：这些是上一轮回补失败留下的，
+        // 状态条件更新对它们永远命中 0 行，只能靠这里重试。
+        var pending = await _seckill
+            .ListPendingStockReturnSessionsAsync(limit, ct)
             .ConfigureAwait(false);
 
-        if (expired.Count == 0)
+        var expired = await _seckill
+            .ListExpiredRunningSessionsAsync(nowUtc, limit, ct)
+            .ConfigureAwait(false);
+
+        if (pending.Count == 0 && expired.Count == 0)
         {
             return ApiResults.Ok(new FinishExpiredResult(0, 0, 0, Array.Empty<string>()));
         }
@@ -65,6 +72,24 @@ public sealed class FinishExpiredSessionsHandler
         var finished = 0;
         var released = 0;
         var failed = new List<string>();
+
+        foreach (var session in pending)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                var outcome = await _returner.ReturnAsync(session, ct).ConfigureAwait(false);
+                released += outcome.Released;
+                failed.AddRange(outcome.Failed);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // 逐个 try：一个场次回补异常不能拖垮整轮，下一轮还会再扫到它
+                _logger.LogError(ex, "场次 {SessionId} 回补重试异常", session.Id);
+                failed.Add($"{session.Id}（回补异常）");
+            }
+        }
 
         foreach (var session in expired)
         {
@@ -79,13 +104,14 @@ public sealed class FinishExpiredSessionsHandler
             failed.AddRange(outcome.Failed);
         }
 
-        var message = finished == 0
-            ? $"扫描 {expired.Count} 个到期场次，均已被其他路径处理"
-            : $"结束 {finished} 个到期场次，回补 {released} 件库存"
+        var scanned = pending.Count + expired.Count;
+        var message = finished == 0 && pending.Count == 0
+            ? $"扫描 {scanned} 个到期场次，均已被其他路径处理"
+            : $"扫描 {scanned} 个场次（含 {pending.Count} 个回补重试），结束 {finished} 个，回补 {released} 件库存"
                 + (failed.Count > 0 ? $"，{failed.Count} 项回补失败需人工核对" : string.Empty);
 
         return ApiResults.Ok(
-            new FinishExpiredResult(expired.Count, finished, released, failed), message);
+            new FinishExpiredResult(scanned, finished, released, failed), message);
     }
 
     /// <summary>结束单个场次。</summary>

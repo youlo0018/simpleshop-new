@@ -38,6 +38,8 @@ public static class MerchantValidators
             RuleFor(x => x.ContactPhone).Must(v => MerchantRules.ValidatePhone(v) == null).WithMessage("请填写正确的手机号");
             RuleFor(x => x.Logo).MaximumLength(512).WithMessage("Logo 地址过长");
             RuleFor(x => x.Description).MaximumLength(1000).WithMessage("店铺简介最多 1000 个字符");
+            RuleFor(x => x.ServiceGuarantee).MaximumLength(1000).WithMessage("服务保障最多 1000 个字符");
+            RuleFor(x => x.DeliveryNote).MaximumLength(1000).WithMessage("配送说明最多 1000 个字符");
             RuleFor(x => x.Status).Must(s => s is 1 or 2).WithMessage("状态只能是 1 启用 或 2 停用");
             RuleFor(x => x.Remark).MaximumLength(512).WithMessage("备注最多 512 个字符");
         }
@@ -55,6 +57,8 @@ public static class MerchantValidators
             RuleFor(x => x.ContactPhone).Must(v => MerchantRules.ValidatePhone(v) == null).WithMessage("请填写正确的手机号");
             RuleFor(x => x.Logo).MaximumLength(512).WithMessage("Logo 地址过长");
             RuleFor(x => x.Description).MaximumLength(1000).WithMessage("店铺简介最多 1000 个字符");
+            RuleFor(x => x.ServiceGuarantee).MaximumLength(1000).WithMessage("服务保障最多 1000 个字符");
+            RuleFor(x => x.DeliveryNote).MaximumLength(1000).WithMessage("配送说明最多 1000 个字符");
             RuleFor(x => x.Status).Must(s => s is 1 or 2).WithMessage("状态只能是 1 启用 或 2 停用");
             RuleFor(x => x.Remark).MaximumLength(512).WithMessage("备注最多 512 个字符");
         }

@@ -67,6 +67,8 @@ public readonly record struct PromotionLineResult(
 /// <param name="CouponId">实际选中的券 Id，0 表示没用券。</param>
 /// <param name="CouponCode">实际选中的券码。</param>
 /// <param name="UsedActivity">是否命中了活动。</param>
+/// <param name="ActivityHits">命中的活动汇总（含满赠），供活动报表与满赠承诺使用。</param>
+/// <param name="GiftActivityId">命中的满赠活动 Id；没有命中时为 0。</param>
 public readonly record struct FinalPriceResult(
     IReadOnlyList<PromotionLineResult> Lines,
     decimal OriginalTotal,
@@ -75,7 +77,15 @@ public readonly record struct FinalPriceResult(
     decimal FinalPrice,
     long CouponId,
     string CouponCode,
-    bool UsedActivity);
+    bool UsedActivity,
+    IReadOnlyList<ActivityHit> ActivityHits,
+    long GiftActivityId);
+
+/// <summary>命中的某个活动的汇总。</summary>
+/// <param name="ActivityId">活动 Id。</param>
+/// <param name="ActivityName">活动名。</param>
+/// <param name="DiscountAmount">本次落到订单上的实际优惠额（满赠为 0）。</param>
+public readonly record struct ActivityHit(long ActivityId, string ActivityName, decimal DiscountAmount);
 
 /// <summary>活动计算。纯函数，不碰数据库，所以可以单元测试。</summary>
 /// <remarks>
@@ -151,79 +161,26 @@ public static class PromotionCalculator
         return new ActivityQuote(activity.Id, activity.ActivityName, discount, applicable, true, true, false, string.Empty);
     }
 
-    /// <summary>从活动里挑这一行能命中的<b>最优</b>那一个。</summary>
-    /// <param name="activities">候选活动（通常已按时间窗与状态滤过）。</param>
-    /// <param name="lines">整单的行。</param>
-    /// <param name="nowUtc">当前时间。</param>
-    /// <returns>最优活动的试算结果；一个都没命中时 ActivityId 为 0。</returns>
-    /// <remarks>
-    /// 比较顺序（BUSINESS.md 11.2）：优惠力度最大 → 门槛最高 → 创建最早。
-    /// 三级比较都是必需的：只看优惠额的话，两个活动给一样的钱，
-    /// 选哪个就要看创建时间——结果必须是确定的，否则同一单两次试算给出不同优惠，
-    /// 用户会来投诉「为什么价格还会变」。
-    /// </remarks>
-    public static ActivityQuote PickBest(
-        IReadOnlyList<PromotionActivity> activities, IReadOnlyList<PromotionLine> lines, DateTime nowUtc)
-    {
-        ActivityQuote? best = null;
-        PromotionActivity? bestEntity = null;
-
-        foreach (var activity in activities)
-        {
-            var quote = Quote(activity, lines, nowUtc);
-            if (!quote.Applicable || !quote.ReachedThreshold) continue;
-
-            if (best is null)
-            {
-                best = quote;
-                bestEntity = activity;
-                continue;
-            }
-
-            // 满赠（折扣 0）只在没有任何折扣可用时才命中，所以有正数优惠时一定压过满赠
-            if (quote.DiscountAmount > best.Value.DiscountAmount)
-            {
-                best = quote;
-                bestEntity = activity;
-                continue;
-            }
-
-            if (quote.DiscountAmount == best.Value.DiscountAmount)
-            {
-                // 力度相同取门槛更高
-                if (activity.ThresholdAmount > bestEntity!.ThresholdAmount)
-                {
-                    best = quote;
-                    bestEntity = activity;
-                }
-                else if (activity.ThresholdAmount == bestEntity!.ThresholdAmount
-                         && activity.CreatedAt < bestEntity.CreatedAt)
-                {
-                    // 门槛也相同取创建最早
-                    best = quote;
-                    bestEntity = activity;
-                }
-            }
-        }
-
-        return best ?? default;
-    }
-
     /// <summary>整单到手价试算。</summary>
     /// <param name="lines">订单行。</param>
     /// <param name="activities">候选活动。</param>
     /// <param name="coupons">客户可用券；游客传空集合。</param>
     /// <param name="priority">平台优惠优先级，见 <see cref="MarketingPriorities"/>。</param>
     /// <param name="nowUtc">当前时间。</param>
-    /// <returns>整单结果，含逐行拆分。</returns>
+    /// <returns>整单结果，含逐行拆分与命中的活动。</returns>
     /// <remarks>
-    /// <para><b>券与活动都是「整单一个优惠额」，不是「每行各减一次」。</b>
-    /// 「满 100 减 20」遇到三行各 50 元，正确结果是三行各减 6.67 而不是各减 20——
-    /// 后者会让优惠额变成 60 元，直接把商家的钱减穿。这一条是整个计算里最容易写错的地方。
-    /// 所以流程是：先在订单级选出最优来源，再把它的优惠额<b>按行金额比例分摊</b>回各行。</para>
+    /// <para><b>逐订单行独立计算（BUSINESS.md 11.2）</b>：每一行单独挑对自己最有利的来源，
+    /// 行与行互不影响。活动与券的优惠额都是「整单一个数」，再<b>按行金额比例分摊</b>到
+    /// 各自覆盖的行上——不是每行各减一次。「满 100 减 20」遇到三行各 50 元，
+    /// 正确结果是三行共减 20 而不是各减 20。</para>
     ///
-    /// <para><b>互斥的实现</b>：用券就把落在券作用域内的行标记为「已被券覆盖」，
-    /// 这些行不再参与活动评选；作用域外的行照常参与活动（BUSINESS.md 11.3）。</para>
+    /// <para><b>券与活动互斥（11.3）</b>：券是订单级唯一一张，作用于它适用范围
+    /// （全场 / SPU / SKU）内的行；券覆盖的行不再命中活动，作用域外的行照常参与活动。
+    /// 券优先（默认）时先落券、再算作用域外的活动；活动优先时先算活动，
+    /// 没命中活动的券覆盖行才用券，并按这些行重算券门槛。</para>
+    ///
+    /// <para><b>活动池与门槛</b>：券优先时券覆盖的行不参与活动、也不计入活动的门槛基数。
+    /// 各行的活动资格互相独立——A 用券不会替 B 凑满减门槛，也不会把 B 的满减整个压掉。</para>
     ///
     /// <para><b>游客</b>传空券集合，逻辑与「没有可用券」完全一致，只算活动价——
     /// 这正是 11.5 要求的「游客只计算活动价，不计券」。</para>
@@ -238,36 +195,93 @@ public static class PromotionCalculator
         var originals = lines.Select(a => Round2(a.Amount)).ToArray();
         var originalTotal = Round2(originals.Sum());
 
-        // ---- ① 订单级选券（游客传空集合，这里自然选不中） ----
+        // ---- ① 订单级选券（11.3 / 11.4：订单级唯一一张，取最优） ----
         var couponLines = lines.Select(a => new CouponOrderLine(a.SpuId, a.SkuId, a.Amount)).ToArray();
         CouponQuote? couponQuote = null;
+        UserCoupon? pickedCoupon = null;
 
         if (coupons.Count > 0 && CouponCalculator.TryPickBest(coupons, couponLines, out var picked) && picked is not null)
         {
             couponQuote = picked;
+            pickedCoupon = coupons.First(a => a.Id == picked.Value.CouponId);
         }
 
-        // ---- ② 订单级选活动 ----
-        var activityQuote = PickBest(activities, lines, nowUtc);
-        var hasActivity = activityQuote.ActivityId != 0 && activityQuote.ReachedThreshold;
-        var activityScope = hasActivity
-            ? ResolveScopeSkus(activities, activityQuote.ActivityId, lines)
-            : new HashSet<long>();
-
-        var couponScope = couponQuote is null
-            ? new HashSet<long>()
-            : ResolveCouponScopeSkus(coupons, couponQuote.Value.CouponId, lines);
-
-        // ---- ③ 按平台优先级二选一 ----
-        // 券优先（默认）：先取最优券，无券才取活动。
-        // 活动优先：先取活动，无活动才取券。
         var couponFirst = priority != MarketingPriorities.ActivityFirst;
-        var useCoupon = couponQuote is not null && (couponFirst || !hasActivity);
-        var useActivity = !useCoupon && hasActivity;
 
-        // ---- ④ 把选中的优惠额分摊回它覆盖到的那些行 ----
+        // 券覆盖的行：券优先时这些行只用券；活动优先时先看有没有活动，没有才轮到券
+        var couponCovered = new bool[lines.Count];
+        if (pickedCoupon is not null)
+        {
+            for (var i = 0; i < lines.Count; i++)
+            {
+                couponCovered[i] = CouponCalculator.CoversLine(pickedCoupon, couponLines[i]);
+            }
+        }
+
+        // ---- ② 活动池：券优先时排除券覆盖的行 ----
+        // 各行互不影响（11.2）：券覆盖的行不参与活动、也不计入门槛基数。
+        var pool = new List<int>();
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (couponFirst && couponQuote is not null && couponCovered[i]) continue;
+            pool.Add(i);
+        }
+
+        var poolLines = pool.Select(i => lines[i]).ToArray();
+
+        // ---- ③ 每个活动在活动池上的试算（门槛 = 池内适用行金额合计） ----
+        var quotes = new Dictionary<long, ActivityQuote>(activities.Count);
+        foreach (var activity in activities)
+        {
+            quotes[activity.Id] = Quote(activity, poolLines, nowUtc);
+        }
+
+        // ---- ④ 逐行贪心选活动：该行分到的优惠最大 → 门槛最高 → 创建最早 ----
+        var chosen = new Dictionary<long, List<int>>();
+        for (var p = 0; p < pool.Count; p++)
+        {
+            var i = pool[p];
+            PromotionActivity? best = null;
+            var bestShare = 0m;
+
+            foreach (var activity in activities)
+            {
+                var quote = quotes[activity.Id];
+                if (!quote.Applicable || !quote.ReachedThreshold) continue;
+                if (!CoversLine(activity, lines[i])) continue;
+
+                // 券覆盖的行在活动优先时也不该命中满赠：这张券就是「可用的折扣」
+                if (quote.IsGift && couponQuote is not null && couponCovered[i]) continue;
+
+                // 该行能分到的优惠 = 活动优惠额按适用行金额比例分到这一行
+                var share = quote.ThresholdBase <= 0m || quote.DiscountAmount <= 0m
+                    ? 0m
+                    : quote.DiscountAmount * Round2(lines[i].Amount) / quote.ThresholdBase;
+
+                if (best is null
+                    || share > bestShare
+                    || (share == bestShare && activity.ThresholdAmount > best.ThresholdAmount)
+                    || (share == bestShare && activity.ThresholdAmount == best.ThresholdAmount
+                        && activity.CreatedAt < best.CreatedAt))
+                {
+                    best = activity;
+                    bestShare = share;
+                }
+            }
+
+            if (best is null) continue;
+
+            if (!chosen.TryGetValue(best.Id, out var indexes))
+            {
+                indexes = [];
+                chosen[best.Id] = indexes;
+            }
+
+            indexes.Add(i);
+        }
+
+        // ---- ⑤ 组装逐行结果并落地活动 ----
         var results = new List<PromotionLineResult>(lines.Count);
-
         for (var i = 0; i < lines.Count; i++)
         {
             results.Add(new PromotionLineResult(
@@ -275,29 +289,87 @@ public static class PromotionCalculator
                 DiscountSources.None, string.Empty, false));
         }
 
-        if (useActivity)
+        var hits = new List<ActivityHit>();
+        long giftActivityId = 0;
+
+        foreach (var (activityId, indexes) in chosen)
         {
-            var total = Math.Min(activityQuote.DiscountAmount, SumOf(results, activityScope));
-            ApplyDiscount(results, activityScope, total, DiscountSources.Activity, activityQuote.ActivityName);
-        }
-        else if (useCoupon && couponQuote is not null)
-        {
-            var total = Math.Min(couponQuote.Value.DiscountAmount, SumOf(results, couponScope));
-            ApplyDiscount(results, couponScope, total, DiscountSources.Coupon, couponQuote.Value.CouponCode);
+            var activity = activities.First(a => a.Id == activityId);
+            var quote = quotes[activityId];
+
+            // 分摊基数取「活动在池内的全部适用行」，而不是「选了它的行」：
+            // 选它的行变多或变少，其它行分到的金额不受影响（各行互不影响）。
+            var applicableCount = poolLines.Count(l => CoversLine(activity, l));
+            var distributable = Round2(indexes.Sum(i => results[i].OriginalAmount));
+            var total = Math.Min(quote.DiscountAmount, distributable);
+
+            if (total > 0m)
+            {
+                ApplyDiscountByBase(
+                    results, indexes, total, quote.ThresholdBase,
+                    indexes.Count == applicableCount, DiscountSources.Activity, activity.ActivityName);
+            }
+            else if (quote.IsGift)
+            {
+                // 满赠折扣额是 0，但要给命中行打上角标：商品卡要显示「满 X 赠券」而不是「无优惠」
+                foreach (var i in indexes)
+                {
+                    results[i] = results[i] with
+                    {
+                        Source = DiscountSources.Gift,
+                        SourceName = activity.ActivityName
+                    };
+                }
+
+                giftActivityId = activity.Id;
+            }
+
+            hits.Add(new ActivityHit(
+                activity.Id, activity.ActivityName,
+                Round2(indexes.Sum(i => results[i].ActivityDiscount))));
         }
 
-        // 满赠的优惠额是 0，上面的分摊会直接跳过——但它**确实命中了**，
-        // 商品卡上要显示「满 100 赠券」而不是「无优惠」，所以单独把角标打上
-        if (useActivity && activityQuote.IsGift)
+        // ---- ⑥ 券落地 ----
+        // 券优先：券覆盖的所有行都用券。
+        // 活动优先：只有没命中活动的券覆盖行才用券；参与活动的行已不在券的实际作用范围里，
+        // 门槛按这些行重算——否则会出现「券把已经参加活动的行也算进门槛」的虚高结论。
+        CouponQuote? effectiveCoupon = null;
+        var couponTargets = new List<int>();
+        if (couponQuote is not null && pickedCoupon is not null)
         {
-            for (var i = 0; i < results.Count; i++)
+            for (var i = 0; i < lines.Count; i++)
             {
-                if (!activityScope.Contains(results[i].SkuId)) continue;
-                results[i] = results[i] with { Source = DiscountSources.Gift, SourceName = activityQuote.ActivityName };
+                if (!couponCovered[i]) continue;
+                if (!couponFirst && results[i].ActivityDiscount > 0m) continue;
+                couponTargets.Add(i);
+            }
+
+            if (couponFirst)
+            {
+                effectiveCoupon = couponQuote;
+            }
+            else if (couponTargets.Count > 0)
+            {
+                var sub = CouponCalculator.Quote(
+                    pickedCoupon, couponTargets.Select(i => couponLines[i]).ToArray());
+                effectiveCoupon = sub.ReachedThreshold && sub.DiscountAmount > 0m ? sub : null;
+            }
+
+            if (effectiveCoupon is not null && couponTargets.Count > 0)
+            {
+                var distributable = Round2(couponTargets.Sum(i => results[i].OriginalAmount));
+                var total = Math.Min(effectiveCoupon.Value.DiscountAmount, distributable);
+                ApplyDiscountByBase(
+                    results, couponTargets, total, effectiveCoupon.Value.ThresholdBase,
+                    true, DiscountSources.Coupon, effectiveCoupon.Value.CouponCode);
+            }
+            else
+            {
+                effectiveCoupon = null;
             }
         }
 
-        // ---- ⑤ 逐行算到手价并封底 ----
+        // ---- ⑦ 逐行算到手价并封底 ----
         for (var i = 0; i < results.Count; i++)
         {
             var a = results[i];
@@ -322,33 +394,36 @@ public static class PromotionCalculator
             activityTotal,
             couponTotal,
             Round2(results.Sum(a => a.PayableAmount)),
-            useCoupon ? couponQuote!.Value.CouponId : 0,
-            useCoupon ? couponQuote!.Value.CouponCode : string.Empty,
-            useActivity && results.Any(a => a.Source is DiscountSources.Activity or DiscountSources.Gift));
+            effectiveCoupon?.CouponId ?? 0,
+            effectiveCoupon?.CouponCode ?? string.Empty,
+            hits.Count > 0,
+            hits,
+            giftActivityId);
     }
 
-    /// <summary>把一个整单优惠额按行金额比例分摊到它覆盖到的行上。</summary>
+    /// <summary>把一个整单优惠额按行金额比例分摊到选中的行上。</summary>
     /// <param name="results">逐行结果，原地写入折扣额与来源。</param>
-    /// <param name="scope">被这个优惠覆盖到的 SKU 集合。</param>
+    /// <param name="indexes">本次实际落到的行下标（只包含选了该优惠的行）。</param>
     /// <param name="total">要分摊的优惠总额。</param>
+    /// <param name="baseSum">分摊基数：该优惠<b>全部适用行</b>的原价合计。</param>
+    /// <param name="absorbRemainder">是否让金额最大的行吸收舍入余数（适用行全部落上时为 true）。</param>
     /// <param name="source">来源标签，见 <see cref="DiscountSources"/>。</param>
     /// <param name="sourceName">来源名称（活动名或券码），展示在优惠角标上。</param>
-    private static void ApplyDiscount(
-        List<PromotionLineResult> results, HashSet<long> scope, decimal total, string source, string sourceName)
+    /// <remarks>
+    /// <b>分摊基数为什么是「全部适用行」而不是「选中行」</b>：
+    /// 逐行贪心下同一活动的适用行可能只有一部分选了它，
+    /// 用「选中行」做基数会让选它的行分到更大的份额（行与行互相影响），
+    /// 违反 11.2 的「各行互不影响，取该行可用最大优惠」。
+    /// </remarks>
+    private static void ApplyDiscountByBase(
+        List<PromotionLineResult> results, IReadOnlyList<int> indexes, decimal total,
+        decimal baseSum, bool absorbRemainder, string source, string sourceName)
     {
-        var indexes = new List<int>();
-        for (var i = 0; i < results.Count; i++)
-        {
-            if (scope.Contains(results[i].SkuId)) indexes.Add(i);
-        }
-
         if (indexes.Count == 0 || total <= 0m) return;
 
-        var baseSum = Round2(indexes.Sum(a => results[a].OriginalAmount));
+        baseSum = Round2(baseSum);
         if (baseSum <= 0m) return;
 
-        // 余数全给金额最大的那一行：按比例逐行 Round 一定会丢掉几分钱，
-        // 结果就是「各行优惠之和 ≠ 整单优惠」，对账时又是一次「差一分钱」
         var largest = indexes[0];
         for (var k = 1; k < indexes.Count; k++)
         {
@@ -358,14 +433,22 @@ public static class PromotionCalculator
         var allocated = 0m;
         foreach (var i in indexes)
         {
-            if (i == largest) continue;
+            if (absorbRemainder && i == largest) continue;
 
             var part = Round2(total * results[i].OriginalAmount / baseSum);
+            // 单行优惠不能超过这一行本身（否则订单行会出现「优惠 > 原价」）
+            if (part > results[i].OriginalAmount) part = results[i].OriginalAmount;
             results[i] = WithDiscount(results[i], part, source, sourceName);
-            allocated += part;
+            allocated = Round2(allocated + part);
         }
 
+        if (!absorbRemainder) return;
+
+        // 余数全给金额最大的那一行：按比例逐行 Round 一定会丢掉几分钱，
+        // 结果就是「各行优惠之和 ≠ 整单优惠」，对账时又是一次「差一分钱」
         var last = Round2(total - allocated);
+        if (last < 0m) last = 0m;
+        if (last > results[largest].OriginalAmount) last = results[largest].OriginalAmount;
         results[largest] = WithDiscount(results[largest], last, source, sourceName);
     }
 
@@ -381,50 +464,22 @@ public static class PromotionCalculator
             ? line with { CouponDiscount = discount, Source = source, SourceName = sourceName }
             : line with { ActivityDiscount = discount, Source = source, SourceName = sourceName };
 
-    /// <summary>求指定 SKU 集合内的原价合计。</summary>
-    /// <param name="results">逐行结果。</param>
-    /// <param name="scope">SKU 集合。</param>
-    /// <returns>合计，两位小数。</returns>
-    private static decimal SumOf(List<PromotionLineResult> results, HashSet<long> scope)
-        => Round2(results.Where(a => scope.Contains(a.SkuId)).Sum(a => a.OriginalAmount));
-
-    /// <summary>算出某个活动在订单里覆盖到的 SKU 集合。</summary>
-    /// <param name="activities">候选活动。</param>
-    /// <param name="activityId">活动 Id。</param>
-    /// <param name="lines">订单行。</param>
-    /// <returns>被覆盖的 SKU Id 集合。</returns>
-    private static HashSet<long> ResolveScopeSkus(
-        IReadOnlyList<PromotionActivity> activities, long activityId,
-        IReadOnlyList<PromotionLine> lines)
+    /// <summary>判断某一行是否落在活动范围内（商户 + SPU / SKU）。</summary>
+    /// <param name="activity">活动。</param>
+    /// <param name="line">订单行。</param>
+    /// <returns>落在范围内返回 true。</returns>
+    /// <remarks>逐行贪心要靠它把「这个活动对这个行是否适用」单独判一次，
+    /// 不能拿整单的适用性（<see cref="IsLineInScope"/>）顶替。</remarks>
+    public static bool CoversLine(PromotionActivity activity, PromotionLine line)
     {
-        var result = new HashSet<long>();
-        var activity = activities.FirstOrDefault(a => a.Id == activityId);
-
-        if (activity is null)
-        {
-            foreach (var l in lines) result.Add(l.SkuId);
-            return result;
-        }
-
         // 商户级活动只覆盖自己家的行：不判这一条，优惠额会分摊到别的商户的商品上
-        var own = lines.Where(l => CoversMerchant(activity, l)).ToList();
-
-        if (activity.TargetType == TargetTypes.All)
-        {
-            foreach (var l in own) result.Add(l.SkuId);
-            return result;
-        }
+        if (!CoversMerchant(activity, line)) return false;
+        if (activity.TargetType == TargetTypes.All) return true;
 
         var ids = ParseTargets(activity.Targets);
-        foreach (var l in own)
-        {
-            if (activity.TargetType == TargetTypes.BySpu ? ids.Contains(l.SpuId) : ids.Contains(l.SkuId))
-            {
-                result.Add(l.SkuId);
-            }
-        }
-
-        return result;
+        return activity.TargetType == TargetTypes.BySpu
+            ? ids.Contains(line.SpuId)
+            : ids.Contains(line.SkuId);
     }
 
     /// <summary>算活动「适用行金额合计」。</summary>
@@ -492,35 +547,11 @@ public static class PromotionCalculator
         }
     }
 
-    /// <summary>算出这张券在订单里覆盖到的 SKU 集合。</summary>
-    /// <param name="coupons">全部候选券。</param>
-    /// <param name="couponId">选中的券 Id。</param>
-    /// <param name="lines">订单行。</param>
-    /// <returns>被覆盖的 SKU Id 集合。</returns>
-    private static HashSet<long> ResolveCouponScopeSkus(
-        IReadOnlyList<UserCoupon> coupons, long couponId, IReadOnlyList<PromotionLine> lines)
-    {
-        var result = new HashSet<long>();
-
-        var coupon = coupons.FirstOrDefault(a => a.Id == couponId);
-        if (coupon is null || coupon.TargetType == TargetTypes.All)
-        {
-            foreach (var l in lines) result.Add(l.SkuId);
-            return result;
-        }
-
-        var ids = ParseTargets(coupon.Targets);
-        foreach (var l in lines)
-        {
-            if (coupon.TargetType == TargetTypes.BySpu ? ids.Contains(l.SpuId) : ids.Contains(l.SkuId))
-            {
-                result.Add(l.SkuId);
-            }
-        }
-
-        return result;
-    }
-
+    /// <summary>构造一个「没命中」的活动试算结果。</summary>
+    /// <param name="activity">活动。</param>
+    /// <param name="baseAmount">门槛判定基数（适用行金额合计）。</param>
+    /// <param name="reason">未命中的中文原因，便于前端提示。</param>
+    /// <returns>优惠额为 0、ReachedThreshold 为 false 的试算结果。</returns>
     private static ActivityQuote Miss(PromotionActivity activity, decimal baseAmount, string reason)
         => new(activity.Id, activity.ActivityName, 0m, baseAmount, false, true, false, reason);
 }

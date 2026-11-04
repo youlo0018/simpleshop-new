@@ -15,7 +15,61 @@ public record ClaimCouponCommand(long CustomerId, long ActivityId, int Quantity 
     : IRequest<ApiResponse<ClaimCouponResult>>;
 
 /// <summary>查询当前可领取的券活动。</summary>
-public record QueryAvailableCouponsCommand() : IRequest<ApiResponse<List<CouponActivityItem>>>;
+/// <param name="PlatformId">当前平台 Id，0 表示不按平台过滤（仅供内部兼容）。</param>
+/// <param name="CustomerId">当前客户 Id；匿名访问时服务端会按游客处理。</param>
+/// <param name="Page">页码，从 1 起。</param>
+/// <param name="PageSize">每页条数，1~50。</param>
+public record QueryAvailableCouponsCommand(
+    long PlatformId = 0,
+    long CustomerId = 0,
+    int Page = 1,
+    int PageSize = 20)
+    : IRequest<ApiResponse<PagedResult<AvailableCouponDto>>>;
+
+/// <summary>领券中心的一张券。</summary>
+/// <param name="ActivityId">券活动 Id。</param>
+/// <param name="ActivityName">活动名。</param>
+/// <param name="TemplateId">券模板 Id。</param>
+/// <param name="TemplateName">模板名。</param>
+/// <param name="CouponType">券类型值。</param>
+/// <param name="CouponTypeName">券类型中文名。</param>
+/// <param name="ThresholdAmount">使用门槛，0 表示无门槛。</param>
+/// <param name="DiscountAmount">优惠金额。</param>
+/// <param name="DiscountRate">折扣率，8.5 表示 85 折。</param>
+/// <param name="ValidDays">领取后有效天数。</param>
+/// <param name="TargetType">适用范围值。</param>
+/// <param name="TargetTypeName">适用范围中文名。</param>
+/// <param name="ScopeText">可直接展示的适用范围说明。</param>
+/// <param name="ClaimStartTime">领取开始时间（UTC ISO）。</param>
+/// <param name="ClaimEndTime">领取结束时间（UTC ISO）。</param>
+/// <param name="ClaimQuantity">活动发放总量。</param>
+/// <param name="ClaimedQuantity">活动已领取量。</param>
+/// <param name="PerUserLimit">每人限领。</param>
+/// <param name="CustomerClaimedCount">当前客户已领数量，游客为 0。</param>
+/// <param name="IsClaimed">当前客户是否已达限领。</param>
+/// <param name="CanClaim">当前是否还能领取。</param>
+public sealed record AvailableCouponDto(
+    long ActivityId,
+    string ActivityName,
+    long TemplateId,
+    string TemplateName,
+    int CouponType,
+    string CouponTypeName,
+    decimal ThresholdAmount,
+    decimal DiscountAmount,
+    decimal DiscountRate,
+    int ValidDays,
+    int TargetType,
+    string TargetTypeName,
+    string ScopeText,
+    string ClaimStartTime,
+    string ClaimEndTime,
+    int ClaimQuantity,
+    int ClaimedQuantity,
+    int PerUserLimit,
+    int CustomerClaimedCount,
+    bool IsClaimed,
+    bool CanClaim);
 
 /// <summary>领券结果。</summary>
 public sealed record ClaimCouponResult(IReadOnlyList<string> CouponCodes, string Message);
@@ -97,6 +151,7 @@ public static class CouponValidators
     public static void AddCouponValidators(IServiceCollection services)
     {
         services.AddScoped<IValidator<ClaimCouponCommand>, ClaimCouponValidator>();
+        services.AddScoped<IValidator<QueryAvailableCouponsCommand>, QueryAvailableCouponsValidator>();
         services.AddScoped<IValidator<OccupyCouponCommand>, OccupyCouponValidator>();
         services.AddScoped<IValidator<ConsumeCouponCommand>, CouponOrderValidator>();
         services.AddScoped<IValidator<ReleaseCouponCommand>, ReleaseCouponValidator>();
@@ -128,6 +183,19 @@ public static class CouponValidators
             RuleFor(x => x.CustomerId).GreaterThan(0).WithMessage("客户 Id 必须为正数");
             RuleFor(x => x.ActivityId).GreaterThan(0).WithMessage("券活动 Id 必须为正数");
             RuleFor(x => x.Quantity).InclusiveBetween(1, 10).WithMessage("单次领取张数必须在 1 ~ 10 之间");
+        }
+    }
+
+    /// <summary>领券中心分页校验。</summary>
+    private sealed class QueryAvailableCouponsValidator : AbstractValidator<QueryAvailableCouponsCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryAvailableCouponsValidator()
+        {
+            RuleFor(x => x.PlatformId).GreaterThanOrEqualTo(0).WithMessage("平台信息不正确");
+            RuleFor(x => x.CustomerId).GreaterThanOrEqualTo(0).WithMessage("客户信息不正确");
+            RuleFor(x => x.Page).GreaterThanOrEqualTo(1).WithMessage("页码必须大于 0");
+            RuleFor(x => x.PageSize).InclusiveBetween(1, 50).WithMessage("每页条数必须在 1 ~ 50 之间");
         }
     }
 

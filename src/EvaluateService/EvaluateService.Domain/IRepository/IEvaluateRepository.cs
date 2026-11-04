@@ -46,8 +46,22 @@ public interface IEvaluateRepository
     /// <param name="page">页码，从 1 起。</param>
     /// <param name="pageSize">每页条数。</param>
     /// <param name="ct">取消令牌。</param>
+    /// <param name="hasImage">true 只返回带图评价。</param>
+    /// <param name="minStar">最低星级，0 表示不限。</param>
+    /// <param name="maxStar">最高星级，0 表示不限。</param>
     /// <returns>分页结果。</returns>
     Task<PagedEvaluates> PageBySpuAsync(long spuId, long skuId, int page, int pageSize,
+        CancellationToken ct = default, bool hasImage = false, int minStar = 0, int maxStar = 0);
+
+    /// <summary>分页查某商户下的可见首评（店铺评价页）。</summary>
+    /// <param name="merchantId">商户 Id。</param>
+    /// <param name="platformId">平台 Id，0 表示不限。</param>
+    /// <param name="page">页码。</param>
+    /// <param name="pageSize">每页条数。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>评价分页，仅含未隐藏评价。</returns>
+    Task<PagedEvaluates> PageByMerchantAsync(
+        long merchantId, long platformId, int page, int pageSize,
         CancellationToken ct = default);
 
     /// <summary>分页查某客户的评价（我的评价）。</summary>

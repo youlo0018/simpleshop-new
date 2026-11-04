@@ -1,166 +1,264 @@
 <template>
-  <view class="page mall-page">
-    <AppHeader title="商城" subtitle="秒杀、推荐与活动" />
+  <view class="mall page-shell">
+    <AppHeader title="商城">
+      <template #right>
+        <button class="header-search" aria-label="搜索" @click="go('/pages/search/index')">
+          <AppIcon type="search" :size="20" color="#1a1a1a" />
+        </button>
+      </template>
+    </AppHeader>
     <view class="tabs">
-      <view
-        v-for="tab in tabs"
-        :key="tab.value"
-        class="tabs__item"
-        :class="{ 'tabs__item--active': active === tab.value }"
-        @tap="active = tab.value"
-      >
-        {{ tab.label }}
+      <button v-for="tab in tabs" :key="tab.key" :class="{ active: active === tab.key }" @click="active = tab.key">{{ tab.label }}</button>
+    </view>
+    <template v-if="active === 'recommend'">
+      <view class="sorts">
+        <button v-for="sort in sorts" :key="sort.value" :class="{ active: sortBy === sort.value }" @click="changeSort(sort.value)">{{ sort.label }}</button>
       </view>
-    </view>
-    <view v-if="loading" class="loading">正在加载…</view>
-    <view v-else-if="active === 'recommend'" class="product-grid">
-      <ProductCard v-for="item in products" :key="item.productId" :product="item" />
-    </view>
-    <view v-else-if="active === 'activity'" class="activity-list">
-      <view v-for="item in activities" :key="item.activityId" class="activity-card">
-        <text class="activity-card__name">{{ item.activityName }}</text>
-        <text class="activity-card__desc">{{ item.templateName }} · 限时优惠</text>
-        <text class="activity-card__time">{{ dateTime(item.claimStartTime) }} - {{ dateTime(item.claimEndTime) }}</text>
+      <view class="product-grid"><ProductCard v-for="item in products" :key="item.productId" :product="item" /></view>
+    </template>
+    <template v-else-if="active === 'seckill'">
+      <button class="feature card" @click="go('/pages/seckill/index')">
+        <view class="feature__lead">
+          <view class="feature__icon"><AppIcon type="fire-filled" :size="25" color="#ff7a00" /></view>
+          <text>限时抢购</text>
+        </view>
+        <view class="feature__more"><text>查看今日场次</text><AppIcon type="right" :size="13" color="#8a8a8f" /></view>
+      </button>
+    </template>
+    <template v-else>
+      <view v-for="activity in activities" :key="activity.activityId" class="activity card" @click="openActivity(activity.activityId)">
+        <image v-if="activity.coverImage" :src="activity.coverImage" mode="aspectFill" />
+        <view><text>{{ activity.activityName }}</text><text>{{ activity.description }}</text></view>
       </view>
-      <view v-if="!activities.length" class="empty">暂无进行中的活动</view>
-    </view>
-    <view v-else class="seckill-list">
-      <view v-for="item in seckill" :key="item.sessionId" class="seckill-card" @tap="toSeckill">
-        <text class="seckill-card__name">{{ item.sessionName }}</text>
-        <text class="seckill-card__time">{{ dateTime(item.startTime) }}</text>
-        <text class="seckill-card__status">{{ item.statusName }}</text>
-      </view>
-      <view v-if="!seckill.length" class="empty">暂无秒杀场次</view>
-    </view>
-    <BottomNav active="mall" />
+      <EmptyState v-if="!activities.length" title="活动正在准备中" icon="fire" />
+    </template>
   </view>
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { onLoad } from '@dcloudio/uni-app';
+import { ref } from 'vue';
+import { onLoad, onReachBottom } from '@dcloudio/uni-app';
 import AppHeader from '@/components/AppHeader.vue';
-import BottomNav from '@/components/BottomNav.vue';
 import ProductCard from '@/components/ProductCard.vue';
+import EmptyState from '@/components/EmptyState.vue';
+import AppIcon from '@/components/AppIcon.vue';
 import { request } from '@/core/http';
-import { dateTime } from '@/core/format';
+import type { Paged, ProductItem } from '@/core/types';
+import { usePlatformStore } from '@/stores/platform';
 import { useSessionStore } from '@/stores/session';
+import { useDesignStore } from '@/stores/design';
 
+const platform = usePlatformStore();
 const session = useSessionStore();
-const tabs = [
-  { label: '秒杀', value: 'seckill' },
-  { label: '推荐', value: 'recommend' },
-  { label: '活动', value: 'activity' },
-] as const;
-const active = ref<'seckill' | 'recommend' | 'activity'>('recommend');
-const loading = ref(true);
-const products = ref<any[]>([]);
+const design = useDesignStore();
+const active = ref('recommend');
+const sortBy = ref(0);
+const products = ref<ProductItem[]>([]);
 const activities = ref<any[]>([]);
-const seckill = ref<any[]>([]);
+const page = ref(1);
+const total = ref(0);
+const tabs = ref([
+  { key: 'seckill', label: '秒杀' },
+  { key: 'recommend', label: '推荐' },
+  { key: 'activity', label: '活动' },
+]);
+const sorts = [
+  { label: '综合', value: 0 },
+  { label: '销量', value: 1 },
+  { label: '价格', value: 2 },
+  { label: '上新', value: 4 },
+];
 
-async function load() {
-  loading.value = true;
-  const customerId = session.profile?.customerId || '0';
-  const [productData, activitiesData, seckillData] = await Promise.all([
-    request<any>('/gateway/shop/products/List', {
+async function load(reset = true) {
+  await platform.initialize();
+  session.restore();
+  await design.load();
+  const configured = (design.config as any).mallTabs;
+  if (Array.isArray(configured) && configured.length) {
+    tabs.value = configured.filter((tab: any) => tab.visible !== false).map((tab: any) => ({
+      key: tab.key || tab.type,
+      label: tab.label || tab.text,
+    }));
+    if (!tabs.value.some((tab) => tab.key === active.value)) active.value = tabs.value[0]?.key || 'recommend';
+  }
+  if (reset) {
+    page.value = 1;
+    products.value = [];
+  }
+  if (active.value === 'recommend') {
+    const result = await request<Paged<ProductItem>>('/gateway/shop/products/List', {
       method: 'POST',
       auth: false,
-      data: { customerId, page: 1, pageSize: 30 },
-      silent: true,
-    }).catch(() => ({ items: [] })),
-    request<any[]>('/gateway/coupons/Available', {
+      data: {
+        customerId: session.profile?.customerId || '0',
+        platformId: platform.platformId,
+        sortBy: sortBy.value,
+        page: page.value,
+        pageSize: 20,
+      },
+    });
+    total.value = result.total;
+    products.value = reset ? result.items : [...products.value, ...result.items];
+  } else if (active.value === 'activity' && reset) {
+    const result = await request<any[]>('/gateway/marketing/activities/Public', {
       method: 'POST',
       auth: false,
-      data: {},
-      silent: true,
-    }).catch(() => []),
-    request<any>('/gateway/marketing/seckill/sessions/Public', {
-      method: 'POST',
-      auth: false,
-      data: { page: 1, pageSize: 20 },
-      silent: true,
-    }).catch(() => ({ items: [] })),
-  ]);
-  products.value = productData?.items || [];
-  activities.value = Array.isArray(activitiesData) ? activitiesData : [];
-  seckill.value = seckillData?.items || seckillData || [];
-  loading.value = false;
+      data: { platformId: platform.platformId, limit: 20 },
+    });
+    activities.value = result || [];
+  }
 }
 
-function toSeckill() {
-  uni.navigateTo({ url: '/pages/seckill/index' });
+function changeSort(value: number) {
+  sortBy.value = value;
+  load();
 }
 
-watch(active, (value) => {
-  if (value === 'seckill') toSeckill();
+function openActivity(id: string) {
+  uni.navigateTo({ url: `/pages/activity/index?id=${id}` });
+}
+
+function go(url: string) {
+  uni.navigateTo({ url });
+}
+
+onLoad(() => load());
+onReachBottom(() => {
+  if (active.value !== 'recommend' || products.value.length >= total.value) return;
+  page.value += 1;
+  load(false);
 });
-
-onLoad(load);
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.mall-page {
-  padding-bottom: 180rpx;
+.header-search {
+  width: 88rpx;
+  height: 88rpx;
+  border: 0;
+  background: transparent;
+  justify-content: center;
 }
 
 .tabs {
   display: flex;
-  gap: $space-2;
-  margin-bottom: $space-3;
+  gap: 8rpx;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid $line;
 }
 
-.tabs__item {
-  flex: 1;
-  padding: 18rpx 0;
-  border-radius: 36rpx;
-  background: #fff;
-  color: $text-2;
-  font-size: $font-sub;
-  text-align: center;
+.tabs button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64rpx;
+  padding: 0 26rpx;
+  border: 0;
+  border-radius: 999rpx;
+  background: transparent;
+  color: $muted;
+  font-size: 25rpx;
+  line-height: 1;
 }
 
-.tabs__item--active {
-  background: $brand;
-  color: #fff;
+.tabs button.active {
+  background: $selection-bg;
+  color: $selection-text;
   font-weight: 600;
+}
+
+.sorts {
+  display: flex;
+  gap: 8rpx;
+  padding: 18rpx 0;
+}
+
+.sorts button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 56rpx;
+  padding: 0 18rpx;
+  border: 0;
+  border-radius: 999rpx;
+  background: transparent;
+  color: $muted;
+  font-size: 23rpx;
+  line-height: 1;
+}
+
+.sorts button.active {
+  background: $selection-bg;
+  color: $selection-text;
+  font-weight: 500;
 }
 
 .product-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: $space-2;
+  gap: 20rpx;
 }
 
-.activity-list,
-.seckill-list {
+.feature,
+.activity {
   display: flex;
-  flex-direction: column;
-  gap: $space-2;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 30rpx;
+  margin-top: 20rpx;
+  border: 0;
+  text-align: left;
 }
 
-.activity-card,
-.seckill-card {
-  padding: $space-4;
-  border-radius: $radius-md;
-  background: #fff;
+.feature__lead,
+.feature__more {
+  display: flex;
+  align-items: center;
 }
 
-.activity-card__name,
-.seckill-card__name {
-  display: block;
-  font-size: 34rpx;
+.feature__lead {
+  gap: 16rpx;
+  font-size: 30rpx;
   font-weight: 600;
 }
 
-.activity-card__desc,
-.activity-card__time,
-.seckill-card__time,
-.seckill-card__status {
-  display: block;
-  margin-top: 8rpx;
-  color: $text-2;
-  font-size: $font-note;
+.feature__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 68rpx;
+  height: 68rpx;
+  border-radius: 20rpx;
+  background: #fff0db;
+}
+
+.feature__more {
+  gap: 2rpx;
+  color: $muted;
+  font-size: 23rpx;
+}
+
+.activity {
+  justify-content: flex-start;
+  gap: 16rpx;
+}
+
+.activity image {
+  width: 210rpx;
+  height: 130rpx;
+  border-radius: 14rpx;
+}
+
+.activity view {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.activity view text:last-child {
+  color: $muted;
+  font-size: 22rpx;
 }
 </style>

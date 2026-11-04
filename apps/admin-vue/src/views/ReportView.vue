@@ -55,9 +55,9 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import request from '@/api/request';
 import { formatAmount, formatCount, formatPercent, emptyText } from '@/utils/format';
+import { openAdminPage } from '@/utils/navigation';
 
 // 格式化口径集中在这里（config 只声明用哪种），页面里不出现任何 toFixed。
 // 之前分散到各页面各写一遍，改一次金额口径要改 N 处。
@@ -72,7 +72,6 @@ const FORMATTERS: Record<string, Fmt> = {
 };
 
 const props = defineProps<{ config: any }>();
-const router = useRouter();
 
 // 🔴 必须用 computed，不能 `const config = props.config`。
 // 四张报表复用同一个组件，vue-router 会**复用组件实例**（component 类型相同、
@@ -119,7 +118,7 @@ async function load() {
 // 运营会以为数据丢了（这正是「下钻」最容易出错的地方）。
 function drill(row: any) {
   const to = config.value.table.linkTo(row, range.value);
-  if (to) router.push(to);
+  if (to) openAdminPage(to);
 }
 
 // 换报表 = 换 config，除了时间档位还要跟着换，所以两个都监听。

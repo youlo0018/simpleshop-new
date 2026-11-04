@@ -78,10 +78,12 @@ const errors = reactive<Record<string, string>>({});
 
 const form = reactive({
   skuId: '',
-  seckillPrice: 0,
-  seckillStock: 0,
+  // 数字框不预填 0：预填看起来像「已经填好了」，而秒杀价 0 会被校验拦下，
+  // 用户还得先删掉那个 0 才能输入。留空提交时由下面的校验给出明确原因。
+  seckillPrice: '' as number | string,
+  seckillStock: '' as number | string,
   perUserLimit: 1,
-  sortOrder: 0,
+  sortOrder: '' as number | string,
 });
 
 const amount = (v: unknown) => formatAmount(v);

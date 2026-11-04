@@ -49,4 +49,11 @@ public sealed class PermissionRepository : CrudRepository<Permission>, IPermissi
         var list = ids.ToArray();
         return await Db.Select<Permission>().Where(a => list.Contains(a.Id)).ToListAsync(ct);
     }
+
+    /// <inheritdoc />
+    public async Task<int> RemoveRoleBindingsAsync(long permissionId, CancellationToken ct = default)
+        => await Db.Delete<RolePermission>()
+            .Where(a => a.PermissionId == permissionId)
+            .ExecuteAffrowsAsync(ct)
+            .ConfigureAwait(false);
 }

@@ -42,7 +42,7 @@ public sealed class ClaimCouponHandler : IRequestHandler<ClaimCouponCommand, Api
 
 /// <summary>查询当前可领取的券活动。</summary>
 public sealed class QueryAvailableCouponsHandler
-    : IRequestHandler<QueryAvailableCouponsCommand, ApiResponse<List<CouponActivityItem>>>
+    : IRequestHandler<QueryAvailableCouponsCommand, ApiResponse<PagedResult<AvailableCouponDto>>>
 {
     private readonly ICouponRepository _coupons;
 
@@ -53,58 +53,70 @@ public sealed class QueryAvailableCouponsHandler
     /// <summary>执行查询。</summary>
     /// <param name="request">查询命令。</param>
     /// <param name="ct">取消令牌。</param>
-    /// <returns>当前可领取的活动列表。</returns>
-    public async Task<ApiResponse<List<CouponActivityItem>>> Handle(
+    /// <returns>当前可领取的活动分页。</returns>
+    public async Task<ApiResponse<PagedResult<AvailableCouponDto>>> Handle(
         QueryAvailableCouponsCommand request, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
-        var (items, _) = await _coupons.PageActivitiesAsync(
-            1, 200, string.Empty, 1, 0, ct).ConfigureAwait(false);
+        var page = await _coupons.PageClaimableActivitiesAsync(
+            request.Page, request.PageSize, request.PlatformId, now, ct).ConfigureAwait(false);
 
-        var available = items
-            .Where(a => a.ClaimStartTime <= now &&
-                        a.ClaimEndTime >= now &&
-                        a.ClaimedQuantity < a.ClaimQuantity)
-            .ToList();
-
-        var templateIds = available.Select(a => a.TemplateId).Distinct().ToArray();
-        var names = templateIds.Length == 0
-            ? new Dictionary<long, string>()
+        var templateIds = page.Items.Select(a => a.TemplateId).Distinct().ToArray();
+        var templates = templateIds.Length == 0
+            ? new Dictionary<long, CouponTemplate>()
             : (await _coupons.ListTemplatesByIdsAsync(templateIds, ct).ConfigureAwait(false))
-                .ToDictionary(a => a.Id, a => a.TemplateName);
+                .ToDictionary(a => a.Id);
 
         // 模板已被删的活动**不再展示**：它必然领不到（ClaimAsync 会以「券模板不存在或已停用」拒绝），
         // 摆在领券中心只是给用户一个点了就报错的按钮。删除入口已经拦住了新数据，
         // 这里兜的是历史遗留的悬空引用。
-        available = available.Where(a => names.ContainsKey(a.TemplateId)).ToList();
+        var available = page.Items
+            .Where(a => templates.TryGetValue(a.TemplateId, out var template) && template.Status == 1)
+            .ToList();
 
-        var result = available.Select(a => new CouponActivityItem(
-            a.Id,
-            a.ActivityName,
-            a.TemplateId,
-            names[a.TemplateId],
-            // 带 Z：小程序端按 UTC 解析后再转本地展示，少了标记会整体偏移一个时区
-            CouponTimeNormalizer.ToUtcIso(a.ClaimStartTime),
-            CouponTimeNormalizer.ToUtcIso(a.ClaimEndTime),
-            a.ClaimQuantity,
-            a.ClaimedQuantity,
-            a.PerUserLimit,
-            a.TargetType,
-            a.TargetType switch
-            {
-                1 => "全场",
-                2 => "指定商品",
-                3 => "指定规格",
-                _ => "未知"
-            },
-            a.SortOrder,
-            a.Status,
-            a.Status == 1 ? "启用" : "停用",
-            a.PlatformId,
-            // 领券中心只列模板仍在的活动（上面已按 names 过滤），这里恒为 true。
-            true)).ToList();
+        // 匿名白名单接口不能相信请求体里的客户 Id；有客户令牌时 ResolvePublic 取令牌客户。
+        var customerId = CustomerScope.ResolvePublic(request.CustomerId);
+        var counts = await _coupons.CountClaimedByActivitiesAsync(
+            customerId, available.Select(a => a.Id).ToArray(), ct).ConfigureAwait(false);
 
-        return ApiResults.Ok(result);
+        var result = available.Select(a =>
+        {
+            var template = templates[a.TemplateId];
+            var limit = Math.Min(a.PerUserLimit, template.PerUserLimit);
+            var claimed = counts.TryGetValue(a.Id, out var count) ? count : 0;
+            var isClaimed = customerId > 0 && claimed >= limit;
+            return new AvailableCouponDto(
+                a.Id,
+                a.ActivityName,
+                a.TemplateId,
+                template.TemplateName,
+                template.CouponType,
+                CouponTypes.NameOf(template.CouponType),
+                template.ThresholdAmount,
+                template.DiscountAmount,
+                template.DiscountRate,
+                template.ValidDays,
+                a.TargetType,
+                TargetTypes.NameOf(a.TargetType),
+                a.TargetType switch
+                {
+                    TargetTypes.All => "全场通用",
+                    TargetTypes.BySpu => "指定商品可用",
+                    TargetTypes.BySku => "指定规格可用",
+                    _ => "适用范围以活动规则为准"
+                },
+                CouponTimeNormalizer.ToUtcIso(a.ClaimStartTime),
+                CouponTimeNormalizer.ToUtcIso(a.ClaimEndTime),
+                a.ClaimQuantity,
+                a.ClaimedQuantity,
+                limit,
+                claimed,
+                isClaimed,
+                a.ClaimedQuantity < a.ClaimQuantity && !isClaimed);
+        }).ToList();
+
+        return ApiResults.Ok(new PagedResult<AvailableCouponDto>(
+            result, page.Total, Math.Max(1, request.Page), Math.Clamp(request.PageSize, 1, 50)));
     }
 }
 

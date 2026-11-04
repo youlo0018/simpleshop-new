@@ -38,7 +38,12 @@ public record UpdateCategoryCommand(
 public record DeleteCategoryCommand(long CategoryId) : IRequest<ApiResponse>;
 
 /// <summary>查询分类树，最多三级。</summary>
-public record QueryCategoryTreeCommand(bool IncludeDisabled = false) : IRequest<ApiResponse<List<CategoryNodeDto>>>;
+/// <param name="IncludeDisabled">是否包含停用分类（仅后台用；前台写死 false）。</param>
+/// <param name="PlatformId">
+/// 平台过滤，0 表示不限。&gt;0 时返回「本平台私有 + 全平台公共（platform_id = 0）」的分类。
+/// </param>
+public record QueryCategoryTreeCommand(bool IncludeDisabled = false, long PlatformId = 0)
+    : IRequest<ApiResponse<List<CategoryNodeDto>>>;
 
 /// <summary>分类树节点。</summary>
 /// <remarks>
@@ -91,6 +96,17 @@ public static class CategoryValidators
         services.AddScoped<IValidator<CreateCategoryCommand>, CreateCategoryValidator>();
         services.AddScoped<IValidator<UpdateCategoryCommand>, UpdateCategoryValidator>();
         services.AddScoped<IValidator<DeleteCategoryCommand>, DeleteCategoryValidator>();
+        services.AddScoped<IValidator<QueryCategoryTreeCommand>, QueryCategoryTreeValidator>();
+    }
+
+    /// <summary>分类树查询校验。</summary>
+    private sealed class QueryCategoryTreeValidator : AbstractValidator<QueryCategoryTreeCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryCategoryTreeValidator()
+        {
+            RuleFor(x => x.PlatformId).GreaterThanOrEqualTo(0).WithMessage("平台信息不正确");
+        }
     }
 
     /// <summary>新建分类校验。</summary>

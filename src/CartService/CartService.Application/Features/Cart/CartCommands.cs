@@ -45,6 +45,8 @@ public record QueryCartCommand(long CustomerId) : IRequest<ApiResponse<List<Cart
 /// <param name="Checked">是否勾选结算。</param>
 /// <param name="IsAvailable">当前是否还能买。</param>
 /// <param name="UnavailableReason">不可买的原因；可买时为空串。</param>
+/// <param name="MerchantId">归属商户 Id，字符串下发；0 表示平台自营或存量行未回填。</param>
+/// <param name="MerchantName">店铺名称，批量取名；取不到时降级为「店铺」。</param>
 /// <remarks>
 /// <b><see cref="Price"/> 为什么不能直接读购物车表。</b>加购时才刷新过一次快照，
 /// 之后就再也不动了：用户加完购去忙别的，商家此时把 25.50 改成 39.00，
@@ -58,7 +60,8 @@ public record QueryCartCommand(long CustomerId) : IRequest<ApiResponse<List<Cart
 public record CartItemDto(
     string Id, long SkuId, long ProductId, string SkuName, string SkuSpecText,
     decimal Price, decimal OriginalPrice, string Image, int Quantity, decimal SubTotal, bool Checked,
-    bool IsAvailable = true, string UnavailableReason = "");
+    bool IsAvailable = true, string UnavailableReason = "",
+    string MerchantId = "", string MerchantName = "");
 
 /// <summary>购物车命令的校验器注册。</summary>
 public static class CartValidators
@@ -69,6 +72,10 @@ public static class CartValidators
     {
         services.AddScoped<IValidator<AddToCartCommand>, AddToCartValidator>();
         services.AddScoped<IValidator<SetCartQuantityCommand>, SetCartQuantityValidator>();
+        services.AddScoped<IValidator<RemoveCartItemCommand>, RemoveCartItemValidator>();
+        services.AddScoped<IValidator<SetCartCheckedCommand>, SetCartCheckedValidator>();
+        services.AddScoped<IValidator<ClearCartCommand>, ClearCartValidator>();
+        services.AddScoped<IValidator<QueryCartCommand>, QueryCartValidator>();
     }
 
     /// <summary>加购校验。</summary>
@@ -98,5 +105,43 @@ public static class CartValidators
             RuleFor(x => x.Quantity).InclusiveBetween(0, Domain.Entities.CartRules.MaxQuantity)
                 .WithMessage($"数量必须在 0 ~ {Domain.Entities.CartRules.MaxQuantity} 之间");
         }
+    }
+
+    /// <summary>删除购物车行校验。</summary>
+    private sealed class RemoveCartItemValidator : AbstractValidator<RemoveCartItemCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public RemoveCartItemValidator()
+        {
+            RuleFor(x => x.CustomerId).GreaterThan(0).WithMessage("请先登录");
+            RuleFor(x => x.CartId).GreaterThan(0).WithMessage("购物车行 Id 必须为正数");
+        }
+    }
+
+    /// <summary>设置勾选状态校验。</summary>
+    private sealed class SetCartCheckedValidator : AbstractValidator<SetCartCheckedCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public SetCartCheckedValidator()
+        {
+            RuleFor(x => x.CustomerId).GreaterThan(0).WithMessage("请先登录");
+            RuleFor(x => x.CartId).GreaterThan(0).WithMessage("购物车行 Id 必须为正数");
+        }
+    }
+
+    /// <summary>清空购物车校验。</summary>
+    private sealed class ClearCartValidator : AbstractValidator<ClearCartCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public ClearCartValidator()
+            => RuleFor(x => x.CustomerId).GreaterThan(0).WithMessage("请先登录");
+    }
+
+    /// <summary>查询购物车校验。</summary>
+    private sealed class QueryCartValidator : AbstractValidator<QueryCartCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryCartValidator()
+            => RuleFor(x => x.CustomerId).GreaterThan(0).WithMessage("请先登录");
     }
 }

@@ -18,6 +18,16 @@ public interface IProductRepository
     /// </remarks>
     Task<(List<Product> Items, long Total)> QueryPagedAsync(
         int page, int pageSize, ProductQuery query, CancellationToken ct = default);
+
+    /// <summary>按商品名前缀取建议名称（搜索联想用）。</summary>
+    /// <param name="platformId">平台 Id。</param>
+    /// <param name="prefix">已输入的关键词前缀。</param>
+    /// <param name="limit">最多返回条数。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>商品名列表（只含审核通过且已上架）。只读、幂等。</returns>
+    Task<List<string>> SuggestNamesAsync(
+        long platformId, string prefix, int limit, CancellationToken ct = default);
+
     /// <summary>按 Id 集合批量取商品（搜索召回后回库取权威数据用）。</summary>
     /// <param name="ids">商品 Id 集合。</param>
     /// <param name="ct">取消令牌。</param>
@@ -28,6 +38,19 @@ public interface IProductRepository
     /// 一次 IN 查询拿回整页，避免 N+1。
     /// </remarks>
     Task<List<Product>> GetByIdsAsync(IReadOnlyCollection<long> ids, CancellationToken ct = default);
+
+    /// <summary>取全部前台可见商品 Id（审核通过且已上架）。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>商品 Id 集合，用于「全场活动」的目标过滤。</returns>
+    Task<List<long>> ListAllVisibleIdsAsync(CancellationToken ct = default);
+
+    /// <summary>取某商户在售商品实际使用的分类 Id。</summary>
+    /// <param name="merchantId">商户 Id。</param>
+    /// <param name="platformId">平台 Id，0 表示不限。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>去重后的分类 Id。</returns>
+    Task<List<long>> ListVisibleCategoryIdsAsync(
+        long merchantId, long platformId, CancellationToken ct = default);
 
     /// <summary>按 Id 取商品。</summary>
     /// <param name="id">商品 Id。</param>
@@ -40,6 +63,38 @@ public interface IProductRepository
     /// <param name="ct">取消令牌。</param>
     /// <returns>SKU 列表。幂等只读。</returns>
     Task<List<Sku>> GetSkusAsync(long productId, CancellationToken ct = default);
+
+    /// <summary>按 SKU Id 集合批量取 SKU（内部快照 / 定价校验用）。</summary>
+    /// <param name="ids">SKU Id 集合。</param>
+    /// <param name="onlyEnabled">true 时只返回启用（状态 1）的 SKU。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>命中的 SKU 列表；查不到的 Id 不在结果里。</returns>
+    Task<List<Sku>> GetSkusByIdsAsync(
+        IReadOnlyCollection<long> ids, bool onlyEnabled, CancellationToken ct = default);
+
+    /// <summary>取某商户全部「已上架」商品（商户停用 / 审核拒绝时批量下架用）。</summary>
+    /// <param name="merchantId">商户 Id。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>已上架且未删除的商品。</returns>
+    Task<List<Product>> ListOnShelfByMerchantAsync(long merchantId, CancellationToken ct = default);
+
+    /// <summary>批量下架某商户的全部已上架商品。</summary>
+    /// <param name="merchantId">商户 Id。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>受影响行数。</returns>
+    /// <remarks>
+    /// 条件更新带上「当前仍是已上架」：与运营的上下架操作并发时不会互相覆盖。
+    /// </remarks>
+    Task<int> OffShelfByMerchantAsync(long merchantId, CancellationToken ct = default);
+
+    /// <summary>回写商品评价均分与条数（评价服务每日重算后调用）。</summary>
+    /// <param name="productId">商品 Id。</param>
+    /// <param name="score">评价均分。</param>
+    /// <param name="count">评价条数。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>商品存在且回写成功返回 true。</returns>
+    Task<bool> UpdateRatingsAsync(
+        long productId, decimal score, int count, CancellationToken ct = default);
 
     /// <summary>取商品的规格项（按 SortOrder 排序）。</summary>
     /// <param name="productId">商品 Id。</param>

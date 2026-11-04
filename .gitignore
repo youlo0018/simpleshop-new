@@ -22,10 +22,10 @@ deploy/data/
 # 视觉回归产物（基线图入库，current/diff 不入库）
 tests/visual/current/
 tests/visual/diff/
-tests/visual/user/
 # Playwright CLI 的运行产物（手动巡检截图 / 会话快照），不是源码
 .playwright-cli/
 output/
+simpleshop-runtime-data-*.tar.gz
 
 # 本地覆盖
 appsettings.Development.json

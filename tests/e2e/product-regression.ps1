@@ -22,6 +22,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()
@@ -590,6 +608,17 @@ Invoke-Case 'API-SHP-004' '审核通过自动上架后商品详情可访问' {
     return $r.success -and $r.data.productId -eq "$($script:shopProductId)"
 }
 
+Invoke-Case 'API-SHP-004b' '🔴 详情带出 merchantId（小程序「进店」按钮靠它跳店铺页）' {
+    # 之前详情 DTO 没有 merchantId，小程序从客户资料里取（那里根本没有这个字段），
+    # 于是「进店」永远跳到 /pages/shop/store?merchantId= 空参数。
+    $r = ShopPost 'Detail' @{ customerId = 0; productId = $script:shopProductId }
+    if (-not $r.success) { return $false }
+
+    Write-Host ("        merchantId = '{0}'" -f $r.data.merchantId) -ForegroundColor DarkGray
+    # 平台自营是 '0'，商户商品是雪花 Id；关键是不能为空
+    return (-not [string]::IsNullOrWhiteSpace([string]$r.data.merchantId))
+}
+
 Invoke-Case 'API-SHP-005' '重复上架操作保持幂等，前台仍可见' {
     Invoke-RestMethod "$Gateway/gateway/products/ChangeListing" -Method Post -Headers $script:headers `
         -Body (@{ productId = $script:shopProductId; status = 1 } | ConvertTo-Json) `
@@ -759,11 +788,12 @@ Invoke-Case 'API-SHP-011d' '🔴 P0 匿名直连后台商品列表时，未审�
 
     try {
         # 直连、不带任何请求头 → 下游按「游客」上下文处理 → 应注入公开可见性过滤
-        $anon = Invoke-RestMethod "http://127.0.0.1:5058/products/List?page=1&pageSize=200" -TimeoutSec 30
+        # pageSize 用 100：后台列表的校验器按文档口径夹在 1-100（传 200 会 400）
+        $anon = Invoke-RestMethod "http://127.0.0.1:5058/products/List?page=1&pageSize=100" -TimeoutSec 30
         $leaked = @($anon.data | Where-Object { [long]$_.id -eq $hiddenId })
 
         # 后台带令牌仍然要能看到它（运营必须能看到待审核与下架商品）
-        $admin = Invoke-RestMethod "$Gateway/gateway/products/List?page=1&pageSize=200" `
+        $admin = Invoke-RestMethod "$Gateway/gateway/products/List?page=1&pageSize=100" `
             -Headers $script:headers -TimeoutSec 30
         $visibleForAdmin = @($admin.data | Where-Object { [long]$_.id -eq $hiddenId })
 

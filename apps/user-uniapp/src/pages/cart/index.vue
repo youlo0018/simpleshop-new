@@ -1,40 +1,66 @@
 <template>
-  <view class="page cart-page">
-    <AppHeader title="购物车" :subtitle="`${items.length} 种商品`" back />
-    <view v-if="loading" class="loading">正在加载购物车…</view>
-    <template v-else-if="items.length">
-      <view class="cart-list">
-        <view v-for="item in items" :key="item.id" class="cart-item">
-          <view class="cart-item__check" :class="{ 'cart-item__check--on': item.checked }" @tap="toggle(item)">
-            <text v-if="item.checked">✓</text>
+  <view class="cart page-shell">
+    <AppHeader title="购物车">
+      <template #right>
+        <button class="edit" @click="editing = !editing">
+          <AppIcon :type="editing ? 'checkmarkempty' : 'compose'" :size="15" color="#66666b" />
+          <text>{{ editing ? '完成' : '编辑' }}</text>
+        </button>
+      </template>
+    </AppHeader>
+    <view v-if="groups.length" class="cart__groups">
+      <view v-for="group in groups" :key="group.merchantId" class="cart-group card">
+        <button class="cart-group__shop" @click="openShop(group.merchantId)">
+          <view class="cart-group__shop-name">
+            <AppIcon type="shop" :size="17" color="#1a1a1a" />
+            <text>{{ group.merchantName }}</text>
           </view>
-          <image class="cart-item__image" :src="item.image || fallbackImage" mode="aspectFill" @error="item.image = fallbackImage" />
-          <view class="cart-item__body" :class="{ 'cart-item__body--unavailable': item.isAvailable === false }">
-            <text class="cart-item__name">{{ item.skuName }}</text>
-            <text class="cart-item__spec">{{ item.skuSpecText }}</text>
-            <text v-if="item.isAvailable === false" class="cart-item__reason">
-              {{ item.unavailableReason || '已失效' }}
-            </text>
-            <view class="cart-item__foot">
-              <text class="amount">¥{{ amount(item.price) }}</text>
+          <AppIcon type="right" :size="15" color="#b8b8be" />
+        </button>
+        <view v-for="item in group.items" :key="item.id" class="cart-row" :class="{ 'cart-row--editing': editing }">
+          <button
+            class="check"
+            :class="{ 'check--on': item.checked }"
+            @click="toggle(item)"
+          >{{ item.checked ? '✓' : '' }}</button>
+          <image class="cart-row__image" :src="item.image" mode="aspectFill" />
+          <view class="cart-row__body">
+            <text class="cart-row__name">{{ item.skuName }}</text>
+            <text class="cart-row__spec">{{ item.skuSpecText }}</text>
+            <view class="cart-row__bottom">
+              <view>
+                <text class="cart-row__price">{{ money(item.price) }}</text>
+                <text v-if="item.originalPrice > item.price" class="cart-row__deal">到手价</text>
+              </view>
               <view class="stepper">
-                <text class="stepper__button" @tap="changeQuantity(item, -1)">−</text>
-                <text class="stepper__value">{{ item.quantity }}</text>
-                <text class="stepper__button" @tap="changeQuantity(item, 1)">＋</text>
+                <button aria-label="减少数量" @click="quantity(item, -1)"><AppIcon type="minus" :size="14" color="#66666b" /></button>
+                <text>{{ item.quantity }}</text>
+                <button aria-label="增加数量" @click="quantity(item, 1)"><AppIcon type="plus" :size="14" color="#66666b" /></button>
               </view>
             </view>
           </view>
+          <button v-if="editing" class="cart-row__delete" aria-label="删除商品" @click="remove(item)">
+            <AppIcon type="trash" :size="17" color="#ff3b30" />
+          </button>
         </view>
       </view>
-      <view class="cart-footer">
-        <view>
-          <text class="cart-footer__label">已选 {{ selectedCount }} 件</text>
-          <text class="cart-footer__amount">合计 ¥{{ amount(total) }}</text>
-        </view>
-        <button class="cart-footer__button" :disabled="selectedCount === 0" @tap="checkout">去结算</button>
+    </view>
+    <EmptyState v-else title="购物车还是空的" description="去挑几件喜欢的商品吧" action="去逛逛" icon="cart" @action="goHome" />
+
+    <view v-if="groups.length" class="checkout-bar safe-bottom">
+      <button class="checkout-bar__all" @click="toggleAll">
+        <view class="check" :class="{ 'check--on': allChecked }">{{ allChecked ? '✓' : '' }}</view>
+        <text>全选</text>
+      </button>
+      <view class="checkout-bar__total">
+        <text>合计</text>
+        <text class="checkout-bar__amount">{{ money(total) }}</text>
       </view>
-    </template>
-    <view v-else class="empty">购物车还是空的，去逛逛吧</view>
+      <button class="checkout-bar__submit" :disabled="!selectedCount" @click="checkout">
+        去结算({{ selectedCount }})
+      </button>
+    </view>
+    <BottomNav active="cart" />
   </view>
 </template>
 
@@ -42,77 +68,115 @@
 import { computed, ref } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
 import AppHeader from '@/components/AppHeader.vue';
+import BottomNav from '@/components/BottomNav.vue';
+import EmptyState from '@/components/EmptyState.vue';
+import AppIcon from '@/components/AppIcon.vue';
 import { request } from '@/core/http';
-import { amount } from '@/core/format';
+import { money } from '@/core/format';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
-const loading = ref(true);
 const items = ref<any[]>([]);
-const fallbackImage = '/static/images/product.svg';
+const editing = ref(false);
 
+const groups = computed(() => {
+  const result = new Map<string, any>();
+  for (const item of items.value) {
+    const key = String(item.merchantId || '0');
+    if (!result.has(key)) {
+      result.set(key, {
+        merchantId: key,
+        merchantName: item.merchantName || '平台自营',
+        items: [],
+      });
+    }
+    result.get(key).items.push(item);
+  }
+  return [...result.values()];
+});
 const selected = computed(() => items.value.filter((item) => item.checked));
-const selectedCount = computed(() =>
-  selected.value.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
-);
-const total = computed(() =>
-  selected.value.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0),
-);
+const selectedCount = computed(() => selected.value.reduce((sum, item) => sum + Number(item.quantity || 0), 0));
+const total = computed(() => selected.value.reduce(
+  (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0,
+));
+const allChecked = computed(() => items.value.length > 0 && items.value.every((item) => item.checked));
 
 async function load() {
   session.restore();
-  if (!session.profile?.customerId) {
-    uni.navigateTo({ url: '/pages/login/index' });
+  if (!session.profile) {
+    items.value = [];
     return;
   }
-  loading.value = true;
-  try {
-    items.value = await request<any[]>('/gateway/carts/List', {
-      params: { customerId: session.profile.customerId },
-      silent: true,
-    });
-  } finally {
-    loading.value = false;
-  }
+  items.value = await request<any[]>('/gateway/carts/List', {
+    params: { customerId: session.profile.customerId },
+    silent: true,
+  }).catch(() => []);
 }
 
 async function toggle(item: any) {
-  // 已下架 / 未过审 / 规格停用的行不给勾选。
-  // 服务端在列表里已经强制把它置成未勾选，这里只是不让它在前端又被勾回去 ——
-  // 否则用户会勾上一堆失效商品，看到一个总价，点结算却被下单接口拒。
-  if (item.isAvailable === false) {
-    uni.showToast({ title: item.unavailableReason || '该商品已失效', icon: 'none' });
-    return;
-  }
   item.checked = !item.checked;
+  if (item.checked) {
+    for (const other of items.value) {
+      if (other.merchantId !== item.merchantId) other.checked = false;
+    }
+  }
   await request('/gateway/carts/SetChecked', {
     method: 'POST',
-    data: {
-      customerId: session.profile?.customerId,
-      cartId: item.id,
-      checked: item.checked,
-    },
+    data: { customerId: session.profile?.customerId, cartItemId: item.id, checked: item.checked },
+    silent: true,
+  }).catch(() => undefined);
+}
+
+async function toggleAll() {
+  const next = !allChecked.value;
+  const merchantId = items.value[0]?.merchantId;
+  for (const item of items.value) {
+    item.checked = item.merchantId === merchantId ? next : false;
+  }
+  uni.showToast({ title: '只能选择同一店铺商品', icon: 'none' });
+}
+
+async function quantity(item: any, delta: number) {
+  const next = Math.max(1, Math.min(99, Number(item.quantity) + delta));
+  if (next === item.quantity) return;
+  item.quantity = next;
+  await request('/gateway/carts/SetQuantity', {
+    method: 'POST',
+    data: { customerId: session.profile?.customerId, cartItemId: item.id, quantity: next },
+    silent: true,
   });
 }
 
-async function changeQuantity(item: any, delta: number) {
-  const quantity = Number(item.quantity) + delta;
-  if (quantity < 0) return;
-  item.quantity = quantity;
-  await request('/gateway/carts/SetQuantity', {
-    method: 'POST',
-    data: {
-      customerId: session.profile?.customerId,
-      cartId: item.id,
-      quantity,
-    },
+async function remove(item: any) {
+  const confirmed = await new Promise<boolean>((resolve) => {
+    uni.showModal({
+      title: '删除商品',
+      content: `确定从购物车移除「${item.skuName}」吗？`,
+      success: (result) => resolve(result.confirm),
+      fail: () => resolve(false),
+    });
   });
-  if (quantity === 0) await load();
+  if (!confirmed) return;
+  await request('/gateway/carts/Remove', {
+    method: 'POST',
+    data: { customerId: session.profile?.customerId, cartItemId: item.id },
+  });
+  items.value = items.value.filter((row) => row.id !== item.id);
 }
 
 function checkout() {
-  uni.setStorageSync('simpleshop_checkout_lines', selected.value);
-  uni.navigateTo({ url: '/pages/checkout/index' });
+  const first = selected.value[0];
+  if (!first) return;
+  const ids = selected.value.map((item) => item.id).join(',');
+  uni.navigateTo({ url: `/pages/checkout/index?cartItemIds=${ids}&merchantId=${first.merchantId}` });
+}
+
+function openShop(id: string) {
+  if (id !== '0') uni.navigateTo({ url: `/pages/shop/store?id=${id}` });
+}
+
+function goHome() {
+  uni.reLaunch({ url: '/pages/index/index' });
 }
 
 onShow(load);
@@ -121,141 +185,219 @@ onShow(load);
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.cart-page {
-  padding-bottom: 180rpx;
-}
-
-.cart-list {
-  display: flex;
-  flex-direction: column;
-  gap: $space-2;
-}
-
-.cart-item {
+.edit {
   display: flex;
   align-items: center;
-  gap: $space-2;
-  padding: $space-3;
-  border-radius: $radius-md;
-  background: #fff;
+  gap: 4rpx;
+  padding: 20rpx;
+  border: 0;
+  background: transparent;
+  color: $muted;
+  font-size: 26rpx;
 }
 
-.cart-item__check {
-  width: 40rpx;
-  height: 40rpx;
-  border: 2rpx solid $hairline;
-  border-radius: 50%;
+.cart__groups {
+  padding-top: 20rpx;
+}
+
+.cart-group {
+  padding: 8rpx 20rpx 20rpx;
+  margin-bottom: 20rpx;
+}
+
+.cart-group__shop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 78rpx;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 27rpx;
+  font-weight: 500;
+}
+
+.cart-group__shop-name {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+}
+
+.cart-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 16rpx 0;
+  border-top: 1rpx solid $line;
+}
+
+.cart-row__delete {
+  position: absolute;
+  right: 4rpx;
+  bottom: 16rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60rpx;
+  height: 52rpx;
+  padding: 0;
+  border: 0;
+  border-radius: 12rpx;
+  background: #fff2f1;
+}
+
+.cart-row--editing .stepper {
+  margin-right: 70rpx;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42rpx;
+  height: 42rpx;
+  flex: 0 0 42rpx;
+  padding: 0;
+  border: 2rpx solid #cfcfd4;
+  border-radius: 999rpx;
+  background: #fff;
   color: #fff;
   font-size: 24rpx;
-  line-height: 38rpx;
-  text-align: center;
 }
 
-.cart-item__check--on {
+.check--on {
   border-color: $brand;
   background: $brand;
 }
 
-.cart-item__image {
-  width: 140rpx;
-  height: 140rpx;
-  border-radius: $radius-sm;
-  background: $bg-page;
+.cart-row__image {
+  width: 164rpx;
+  height: 164rpx;
+  flex: 0 0 164rpx;
+  border-radius: 16rpx;
+  background: #f1f2f4;
 }
 
-.cart-item__body {
+.cart-row__body {
+  display: flex;
+  align-self: stretch;
   flex: 1;
+  flex-direction: column;
+  gap: 8rpx;
   min-width: 0;
 }
 
-.cart-item__name {
+.cart-row__name {
   display: -webkit-box;
   overflow: hidden;
-  font-size: 28rpx;
-  font-weight: 600;
+  font-size: 27rpx;
+  line-height: 1.35;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
-.cart-item__spec {
-  display: block;
-  margin-top: 6rpx;
-  color: $text-2;
-  font-size: $font-note;
+.cart-row__spec {
+  color: $muted;
+  font-size: 22rpx;
 }
 
-.cart-item__body--unavailable {
-  opacity: 0.5;
-}
-
-.cart-item__reason {
-  display: inline-block;
-  margin-top: 6rpx;
-  padding: 2rpx 10rpx;
-  border-radius: $radius-sm;
-  background: rgba(255, 59, 48, 0.1);
-  color: $danger;
-  font-size: $font-note;
-}
-
-.cart-item__foot {
+.cart-row__bottom {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-top: $space-2;
+  margin-top: auto;
+}
+
+.cart-row__price {
+  color: $price;
+  font-size: 32rpx;
+  font-weight: 600;
+}
+
+.cart-row__deal {
+  margin-left: 8rpx;
+  padding: 2rpx 8rpx;
+  border-radius: 6rpx;
+  background: #fff2f0;
+  color: $price;
+  font-size: 18rpx;
 }
 
 .stepper {
   display: flex;
   align-items: center;
   overflow: hidden;
-  border-radius: 28rpx;
-  background: $bg-page;
+  height: 56rpx;
+  border-radius: 12rpx;
+  background: #f3f4f6;
 }
 
-.stepper__button,
-.stepper__value {
-  width: 56rpx;
-  height: 52rpx;
-  font-size: 30rpx;
-  line-height: 52rpx;
-  text-align: center;
-}
-
-.cart-footer {
-  position: fixed;
-  right: 0;
-  bottom: 0;
-  left: 0;
+.stepper button,
+.stepper text {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: $space-2 $space-3 calc(env(safe-area-inset-bottom) + 16rpx);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 -1rpx 0 $hairline;
+  justify-content: center;
+  width: 56rpx;
+  height: 56rpx;
+  border: 0;
+  background: transparent;
+  font-size: 24rpx;
 }
 
-.cart-footer__label {
-  display: block;
-  color: $text-2;
-  font-size: $font-note;
+.checkout-bar {
+  position: fixed;
+  right: 0;
+  bottom: 100rpx;
+  left: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  min-height: 108rpx;
+  padding: 12rpx 24rpx;
+  border-top: 1rpx solid $line;
+  background: #fff;
+  box-shadow: $shadow-float;
 }
 
-.cart-footer__amount {
-  display: block;
-  margin-top: 4rpx;
-  color: $danger;
+.checkout-bar__all {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 24rpx;
+}
+
+.checkout-bar__total {
+  display: flex;
+  align-items: flex-end;
+  flex: 1;
+  flex-direction: column;
+  color: $muted;
+  font-size: 21rpx;
+}
+
+.checkout-bar__amount {
+  color: $price;
   font-size: 34rpx;
   font-weight: 600;
 }
 
-.cart-footer__button {
-  width: 220rpx;
-  height: 80rpx;
-  border-radius: 40rpx;
+.checkout-bar__submit {
+  height: 76rpx;
+  padding: 0 26rpx;
+  border: 0;
+  border-radius: 999rpx;
   background: $brand;
   color: #fff;
-  font-size: $font-body;
-  line-height: 80rpx;
+  font-size: 26rpx;
+}
+
+.checkout-bar__submit[disabled] {
+  opacity: 0.4;
 }
 </style>

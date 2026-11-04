@@ -37,7 +37,7 @@ done < <(load_services)
 echo
 
 echo "===== 前端 ====="
-for pair in "web-admin:5173" "web-h5:5174"; do
+for pair in "web-admin:5173"; do
   label="${pair%%:*}"; port="${pair##*:}"
   if curl -fsS --max-time 2 "http://127.0.0.1:$port/" >/dev/null 2>&1; then
     printf "  ${C_GREEN}✓${C_RESET} %-10s http://127.0.0.1:%s\n" "$label" "$port"

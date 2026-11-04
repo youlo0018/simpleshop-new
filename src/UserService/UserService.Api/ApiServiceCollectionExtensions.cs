@@ -1,5 +1,6 @@
 using System.Reflection;
 using Collaboration.Domain.Configuration;
+using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.MediatR;
 using FluentValidation;
 using MediatR;
@@ -23,6 +24,8 @@ public static class ApiServiceCollectionExtensions
     /// <returns>原集合，便于链式调用。</returns>
     public static IServiceCollection AddAppServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInternalTokenPropagation();
+
         // 必须扫 Application 程序集：Handler 与 Validator 都在那里。
         // 用 Assembly.GetExecutingAssembly() 会注册不到任何 Handler。
         var appAssembly = typeof(CreateUserCommand).Assembly;
@@ -48,7 +51,7 @@ public static class ApiServiceCollectionExtensions
             client.BaseAddress = new Uri(permissionServiceUrl!.TrimEnd('/') + "/");
             // 权限中心不可用时要尽快失败，不能让建号请求一直挂着
             client.Timeout = TimeSpan.FromSeconds(5);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
 
         // 平台 / 商户显示名：账号列表要显示名称而不是雪花 Id（DATA_SPEC 4.3）。
         var merchantPlatformUrl = configuration["Services:MerchantPlatformServiceBaseUrl"];
@@ -63,7 +66,7 @@ public static class ApiServiceCollectionExtensions
             client.BaseAddress = new Uri(merchantPlatformUrl!.TrimEnd('/') + "/");
             // 名称只是展示字段，超时给短一点：取不到就回落显示 Id，不拖慢列表
             client.Timeout = TimeSpan.FromSeconds(5);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
 
         // 会话吊销键写在共享库：读它的是网关，写错库号会静默失效（DATA_SPEC 5.20）。
         var sharedDatabase = configuration.GetSection(RedisOptions.SectionName).Get<RedisOptions>()?.SharedDatabase ?? 0;

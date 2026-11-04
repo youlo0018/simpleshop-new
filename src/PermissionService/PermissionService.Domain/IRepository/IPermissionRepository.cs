@@ -55,6 +55,17 @@ public interface IPermissionRepository
     /// <param name="ct">取消令牌。</param>
     /// <returns>命中的权限点列表。幂等只读。</returns>
     Task<List<Permission>> GetByIdsAsync(IReadOnlyCollection<long> ids, CancellationToken ct = default);
+
+    /// <summary>级联清理某权限点的角色绑定（删除权限点时调用）。</summary>
+    /// <param name="permissionId">权限点 Id。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>受影响行数。</returns>
+    /// <remarks>
+    /// 放在仓储里而不是让 Handler 直接开 IFreeSql：Application 层不得依赖 IFreeSql
+    /// （CODING_STANDARD 1），否则分层就被这条级联删除捅穿了。
+    /// </remarks>
+    Task<int> RemoveRoleBindingsAsync(long permissionId, CancellationToken ct = default);
+
     /// <summary>软删权限点。</summary>
     /// <param name="id">权限点 Id。</param>
     /// <param name="ct">取消令牌。</param>

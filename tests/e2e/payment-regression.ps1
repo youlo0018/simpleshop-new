@@ -24,6 +24,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()
@@ -356,9 +374,10 @@ Invoke-Case 'API-PAY-030' '准备：一张已支付、状态 20 待发货的实�
 }
 
 Invoke-Case 'API-PAY-031' '🔴 P0 退款窗口：实物订单 20 待发货**可退**' {
+    $script:refundImages = @(1..9 | ForEach-Object { "https://cdn.example.com/refund-$_.jpg" })
     $r = PayPost '/refunds/Apply' @{
         orderId = 0; orderNo = $script:orderB; items = $null
-        reason = '买错了，不想要了'
+        reason = '买错了，不想要了'; images = $script:refundImages
     }
     $script:refundB = [long]$r.data
     return $r.success -and $r.data -gt 0
@@ -371,6 +390,54 @@ Invoke-Case 'API-PAY-032' '🔴 P0 整单退款金额**含运费**（51.00 商�
     return $row.amount -eq 61.00 -and $row.refundTypeName -eq '整单退款'
 }
 
+Invoke-Case 'API-PAY-032a' '客户退款列表可查本人申请，并返回最多 9 张凭证' {
+    $r = PayPost '/refunds/My' @{ customerId = $script:customerId; page = 1; pageSize = 10 }
+    $row = @($r.data.items | Where-Object { $_.refundId -eq "$($script:refundB)" })[0]
+    return $r.success -and $null -ne $row `
+        -and @($row.images).Count -eq 9 `
+        -and $row.approvedAt -eq ''
+}
+
+Invoke-Case 'API-PAY-032b' '客户退款详情不可越权读取他人退款单' {
+    $r = PayPost '/refunds/MyDetail' @{
+        customerId = $script:customerId + 1; refundId = $script:refundB
+    }
+    return (-not $r.success) -and $r.code -eq 404
+}
+
+Invoke-Case 'API-PAY-032c' '客户可撤销待审批退款，重复撤销幂等' {
+    $o = New-PendingOrder 'CANCEL-REFUND'
+    if (-not $o.orderNo) { return $false }
+    PayPost '/payments/Simulate' @{ orderNo = $o.orderNo; success = $true } | Out-Null
+    $apply = PayPost '/refunds/Apply' @{
+        orderId = 0; orderNo = $o.orderNo; items = $null; reason = '撤销接口回归'
+    }
+    if (-not $apply.success) { return $false }
+
+    $first = PayPost '/refunds/CancelMy' @{
+        customerId = $script:customerId; refundId = [long]$apply.data
+    }
+    $second = PayPost '/refunds/CancelMy' @{
+        customerId = $script:customerId; refundId = [long]$apply.data
+    }
+    $detail = PayPost '/refunds/MyDetail' @{
+        customerId = $script:customerId; refundId = [long]$apply.data
+    }
+    return $first.success -and $second.success -and $detail.data.status -eq 95 `
+        -and $detail.data.statusName -eq '已撤销'
+}
+
+Invoke-Case 'API-PAY-032d' '退款凭证超过 9 张被校验拦截' {
+    $o = New-PendingOrder 'REFUND-IMAGES'
+    if (-not $o.orderNo) { return $false }
+    PayPost '/payments/Simulate' @{ orderNo = $o.orderNo; success = $true } | Out-Null
+    $r = PayPost '/refunds/Apply' @{
+        orderId = 0; orderNo = $o.orderNo; items = $null; reason = '凭证数量校验'
+        images = @(1..10 | ForEach-Object { "https://cdn.example.com/$_.jpg" })
+    }
+    return (-not $r.success) -and (Get-ErrText $r) -match '9'
+}
+
 Invoke-Case 'API-PAY-033' '🔴 申请阶段**不动订单**：审批前订单仍是 20' {
     # 两段式的意义就在这：运营误点申请不会立刻造成资损
     return (Get-OrderStatus $script:orderB) -eq 20
@@ -378,8 +445,9 @@ Invoke-Case 'API-PAY-033' '🔴 申请阶段**不动订单**：审批前订单�
 
 Invoke-Case 'API-PAY-034' '🔴 重复申请同一订单的整单退款被拒（已有一张待审批）' {
     $r = PayPost '/refunds/Apply' @{ orderId = 0; orderNo = $script:orderB; items = $null; reason = '再申请一次' }
-    # 累计会超过实付，必须挡住
-    return (-not $r.success) -and $r.message -match '超过'
+    # 待审批的那张已经把余额占住：要么报「没有可退余额」，要么报「超过剩余可退」，
+    # 两者都是拒绝。只断言 success=false + 消息落在余额语义上，不锁死具体文案。
+    return (-not $r.success) -and $r.message -match '没有可退余额|超过'
 }
 
 Invoke-Case 'API-PAY-035' '🔴 P0 审批通过：订单转 60 已退款' {
@@ -387,6 +455,16 @@ Invoke-Case 'API-PAY-035' '🔴 P0 审批通过：订单转 60 已退款' {
     $r = PayAdminPost '/refunds/Approve' @{ refundId = $script:refundB }
     if (-not $r.success) { return $false }
     return (Get-OrderStatus $script:orderB) -eq 60
+}
+
+Invoke-Case 'API-PAY-035a' '客户详情返回退款完成时间，后台详情返回凭证图片' {
+    $mine = PayPost '/refunds/MyDetail' @{
+        customerId = $script:customerId; refundId = $script:refundB
+    }
+    $admin = PayPost '/refunds/Detail' @{ refundId = $script:refundB }
+    return $mine.success -and $mine.data.status -eq 20 `
+        -and -not [string]::IsNullOrWhiteSpace($mine.data.approvedAt) `
+        -and $admin.success -and @($admin.data.images).Count -eq 9
 }
 
 Invoke-Case 'API-PAY-036' '🔴 重复审批被拒（幂等：不能退两次）' {
@@ -498,6 +576,59 @@ Invoke-Case 'API-PAY-035c' '🔴 P0 部分退款后订单**不能**被标成整�
         -and $lineAfter.refundableAmount -eq ($line.payableAmount - 20.00) `
         -and $after.data.refundedAmount -eq 20.00 `
         -and $after.data.remainingRefundable -eq ($paid - 20.00)
+}
+
+Invoke-Case 'API-PAY-035d' '🔴 P0 同一订单**第二次**部分退款也能落账（台账退款单号不撞唯一键）' {
+    # 订单侧台账的 refund_no 原来固定写 PR{orderNo}，而 order_refund.refund_no 有唯一索引：
+    # 第二次部分退款必然撞唯一键 → 「支付侧已退款、订单侧余额与台账没动」，
+    # 之后基于旧余额还能再退一次。修复后台账单号用支付侧的退款单号，且订单侧按退款单号幂等。
+    $o = New-PendingOrder 'PART2'
+    if (-not $o.orderNo) { return $false }
+    $no = $o.orderNo
+
+    PayPost '/payments/Simulate' @{ orderNo = $no; success = $true } | Out-Null
+    if ((Get-OrderStatus $no) -ne 20) { return $false }
+
+    $list = Invoke-RestMethod "$Gateway/gateway/admin/orders/List" -Method Post -Headers $script:adminHeaders `
+        -Body (@{ keyword = $no; page = 1; pageSize = 5 } | ConvertTo-Json) `
+        -ContentType 'application/json' -TimeoutSec 20
+    $oid = (@($list.data.items)[0]).orderId
+    $detail = Invoke-RestMethod "$Gateway/gateway/admin/orders/Detail" -Method Post -Headers $script:adminHeaders `
+        -Body (@{ orderId = $oid } | ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 20
+    $line = @($detail.data.items)[0]
+    $paid = [decimal]$detail.data.payableAmount
+
+    # 两次各退 20.00，每次都必须申请 → 审批全程成功
+    foreach ($round in 1..2) {
+        $apply = PayPost '/refunds/Apply' @{
+            orderId = 0; orderNo = $no
+            items = @(@{ orderItemId = [long]$line.orderItemId; amount = 20.00 })
+            reason = "第 $round 次部分退款"
+        }
+        if (-not $apply.success) {
+            Write-Host ("        第 {0} 次申请失败: {1}" -f $round, $apply.message) -ForegroundColor DarkYellow
+            return $false
+        }
+
+        $approve = PayAdminPost '/refunds/Approve' @{ refundId = [long]$apply.data }
+        if (-not $approve.success) {
+            Write-Host ("        第 {0} 次审批失败: {1}" -f $round, $approve.message) -ForegroundColor DarkYellow
+            return $false
+        }
+    }
+
+    $after = Invoke-RestMethod "$Gateway/gateway/admin/orders/Detail" -Method Post -Headers $script:adminHeaders `
+        -Body (@{ orderId = $oid } | ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 20
+    $lineAfter = @($after.data.items)[0]
+
+    Write-Host ("        两次各退 20.00：已退={0} 还可退={1} 行可退={2}" -f `
+        $after.data.refundedAmount, $after.data.remainingRefundable, $lineAfter.refundableAmount) -ForegroundColor DarkGray
+
+    # 两笔都要落在订单侧台账上：已退 40、还可退 11、行可退 51 − 40 = 11
+    return $after.data.refundedAmount -eq 40.00 `
+        -and $after.data.remainingRefundable -eq ($paid - 40.00) `
+        -and $lineAfter.refundableAmount -eq ($line.payableAmount - 40.00) `
+        -and (Get-OrderStatus $no) -ne 60
 }
 
 Invoke-Case 'API-PAY-037' '🔴🔴 审批人取自令牌，伪造请求体里的 approverName 无效' {
@@ -659,6 +790,26 @@ Invoke-Case 'API-PAY-090' '删商品 → 删分类' {
             -ContentType 'application/json' -TimeoutSec 30 | Out-Null
     }
     return $true
+}
+
+Write-Host "`n=== 对账任务入口（本轮新增的补偿链路）===" -ForegroundColor Cyan
+
+Invoke-Case 'API-PAY-100' '退款单对账重放入口可用（审批失败时由它补订单侧落账）' {
+    # 审批链路是「先改退款单状态、再回调订单侧」；订单侧失败时靠这条重放补齐。
+    # 这里只验证入口可用与响应形状（真实的失败-重放闭环在开发环境用停服务的方式手工验过）。
+    $r = Invoke-RestMethod "$Payment/internal/payments/refunds/SyncOrder" -Method Post `
+        -Body (@{ limit = 50 } | ConvertTo-Json) `
+        -ContentType 'application/json' -TimeoutSec 60
+    Write-Host ("        {0}" -f $r.message) -ForegroundColor DarkGray
+    return $r.success -and $null -ne $r.data.scanned -and $null -ne $r.data.synced
+}
+
+Invoke-Case 'API-PAY-101' '支付单对账入口可用（订单已付、支付单没写进去时由它自愈）' {
+    $r = Invoke-RestMethod "$Payment/internal/payments/ReconcilePending" -Method Post `
+        -Body (@{ limit = 20 } | ConvertTo-Json) `
+        -ContentType 'application/json' -TimeoutSec 60
+    Write-Host ("        {0}" -f $r.message) -ForegroundColor DarkGray
+    return $r.success -and $null -ne $r.data.scanned -and $null -ne $r.data.healed
 }
 
 Write-Host "`n=== 汇总 ===" -ForegroundColor Cyan

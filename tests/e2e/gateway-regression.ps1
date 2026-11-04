@@ -20,6 +20,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()
@@ -79,6 +97,11 @@ function Get-Status([string]$Method, [string]$Path, [hashtable]$Headers, $Body) 
     return [int]$http.SendAsync($req).GetAwaiter().GetResult().StatusCode
 }
 
+# 客户账号是平台内账号：注册必须带平台编码（取第一个启用平台，匿名可调）
+$script:platformCode = ((Invoke-RestMethod "$Gateway/gateway/platforms/Public" -TimeoutSec 20).data |
+    Select-Object -First 1).platformCode
+if (-not $script:platformCode) { throw '没有可用平台，网关回归无法执行' }
+
 Write-Host "`n=== GTW 健康检查 ===" -ForegroundColor Cyan
 Invoke-Case 'API-GTW-001' 'GET /health 返回 200（探活不鉴权）' {
     (Get-Status 'GET' '/health' $null $null) -eq 200
@@ -89,6 +112,7 @@ Invoke-Case 'API-GTW-010' '注册无需令牌' {
     $phone = '138' + (Get-Random -Minimum 10000000 -Maximum 99999999)
     (Get-Status 'POST' '/gateway/customers/Register' $null @{
         customerName = "gtw$phone"; password = 'Test123456'; phone = $phone; nickName = '网关测试'
+        platformCode = $script:platformCode
     }) -eq 200
 }
 
@@ -228,6 +252,18 @@ Invoke-Case 'API-GTW-039' '🔴 P0 游客可浏览店铺列表与店铺详情' {
     return $detail.success -and $detail.data.merchantId -eq $hit.merchantId
 }
 
+Invoke-Case 'API-GTW-039b' '🔴 游客可打秒杀场次曝光埋点（匿名白名单漏登记会 401）' {
+    # 秒杀频道是游客可浏览的（BUSINESS 1.2 / FRONTEND_DESIGN 6.3），
+    # 场次 PV 埋点必须匿名可用；漏登记的症状是「页面能看，PV 恒为 0」。
+    # 不带 Authorization 头，确保测的是匿名白名单而不是客户令牌放行。
+    $status = Get-Status 'GET' '/gateway/marketing/seckill/sessions/View?sessionId=1' $null $null
+    if ($status -ne 200) {
+        Write-Host ("        返回 {0}（期望 200）" -f $status) -ForegroundColor DarkYellow
+        return $false
+    }
+    return $true
+}
+
 Write-Host "`n=== GTW 畸形令牌必须 401 而非 500（AUT-007 / AUT-008）===" -ForegroundColor Cyan
 
 # REVIEW 链路 0 第 2 步明确要求：解码异常**必须捕获**，不得冒泡成 500。
@@ -280,7 +316,7 @@ Invoke-Case 'API-GTW-043' '准备：注册一个普通客户并拿到客户令�
     $tail = ([string]$sfx).PadLeft(8, '0').Substring(0, 8)
     $body = @{
         customerName = "gtw$sfx"; password = 'Gtw12345678'
-        phone = "136$tail"; nickName = '网关回归客户'
+        phone = "136$tail"; nickName = '网关回归客户'; platformCode = $script:platformCode
     }
     $r = Invoke-RestMethod "$Gateway/gateway/customers/Register" -Method Post `
         -Body ($body | ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 25

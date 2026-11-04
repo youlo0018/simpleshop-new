@@ -1,6 +1,6 @@
 using Collaboration.Domain.Common;
-using FreeSql;
 using MerchantPlatformService.Domain.Entities;
+using MerchantPlatformService.Domain.IRepository;
 using Microsoft.AspNetCore.Mvc;
 
 namespace MerchantPlatformService.Api.Controllers;
@@ -15,11 +15,17 @@ namespace MerchantPlatformService.Api.Controllers;
 [Route("internal/platforms")]
 public sealed class InternalPlatformController : ControllerBase
 {
-    private readonly IFreeSql _db;
+    private readonly IPlatformRepository _platforms;
+    private readonly IMerchantRepository _merchants;
 
     /// <summary>构造控制器。</summary>
-    /// <param name="db">FreeSql 实例。</param>
-    public InternalPlatformController(IFreeSql db) => _db = db;
+    /// <param name="platforms">平台仓储。</param>
+    /// <param name="merchants">商户仓储。</param>
+    public InternalPlatformController(IPlatformRepository platforms, IMerchantRepository merchants)
+    {
+        _platforms = platforms;
+        _merchants = merchants;
+    }
 
     /// <summary>取某平台的运费配置（订单服务算运费时调用）。</summary>
     /// <param name="platformId">平台 Id；0 表示平台自营。</param>
@@ -35,11 +41,11 @@ public sealed class InternalPlatformController : ControllerBase
     public async Task<ActionResult<ApiResponse<ShippingConfigSnapshot>>> ShippingConfig(
         [FromQuery] long platformId, CancellationToken ct)
     {
-        var row = await _db.Select<Platform>()
-            .Where(a => a.Id == platformId)
-            .FirstAsync(a => new ShippingConfigSnapshot(
-                a.Id, a.ShippingFee, a.FreeShippingThreshold), ct)
-            .ConfigureAwait(false);
+        var platform = await _platforms.GetByIdAsync(platformId, ct).ConfigureAwait(false);
+        var row = platform is null
+            ? null
+            : new ShippingConfigSnapshot(
+                platform.Id, platform.ShippingFee, platform.FreeShippingThreshold);
 
         return Ok(ApiResults.Ok(row ?? new ShippingConfigSnapshot(platformId, 0m, 0m)));
     }
@@ -60,27 +66,61 @@ public sealed class InternalPlatformController : ControllerBase
     public async Task<ActionResult<ApiResponse<NameLookupResult>>> Names(
         [FromBody] NameLookupCommand command, CancellationToken ct)
     {
-        var platformIds = (command.PlatformIds ?? Array.Empty<long>()).Where(a => a > 0).Distinct().ToArray();
-        var merchantIds = (command.MerchantIds ?? Array.Empty<long>()).Where(a => a > 0).Distinct().ToArray();
+        var platforms = (await _platforms
+                .ListNamesByIdsAsync(command.PlatformIds ?? Array.Empty<long>(), ct)
+                .ConfigureAwait(false))
+            .Select(a => new NamePair(a.Id, a.Name))
+            .ToList();
 
-        // 内部上下文不过租户过滤，这里显式去重 + 限流（一次最多 200 个，够列表页用）
-        var platforms = platformIds.Length == 0
-            ? new List<NamePair>()
-            : (await _db.Select<Platform>()
-                .Where(a => platformIds.Contains(a.Id))
-                .Limit(200)
-                .ToListAsync(a => new NamePair(a.Id, a.PlatformName), ct).ConfigureAwait(false));
-
-        var merchants = merchantIds.Length == 0
-            ? new List<NamePair>()
-            : (await _db.Select<Merchant>()
-                .Where(a => merchantIds.Contains(a.Id))
-                .Limit(200)
-                .ToListAsync(a => new NamePair(a.Id, a.MerchantName), ct).ConfigureAwait(false));
+        var merchants = (await _merchants
+                .ListNamesByIdsAsync(command.MerchantIds ?? Array.Empty<long>(), ct)
+                .ConfigureAwait(false))
+            .Select(a => new NamePair(a.Id, a.Name))
+            .ToList();
 
         return Ok(ApiResults.Ok(new NameLookupResult(platforms, merchants)));
     }
+
+    /// <summary>按平台编码解析平台（客户注册 / 登录校验平台用）。</summary>
+    /// <param name="platformCode">平台编码，6 位字母，忽略大小写。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>平台 Id、编码、商城名与状态；不存在返回 404。</returns>
+    /// <remarks>
+    /// 客户账号是平台内账号：注册 / 登录必须先把客户端持有的 platformCode 换成 platformId。
+    /// 这里<b>不替调用方决定「停用平台能不能登录」</b>——只回状态，由客户服务按业务规则处理
+    /// （当前口径：停用平台禁止登录）。
+    /// </remarks>
+    [HttpGet("resolve")]
+    public async Task<ActionResult<ApiResponse<PlatformResolveResult>>> Resolve(
+        [FromQuery] string platformCode, CancellationToken ct)
+    {
+        var platform = await _platforms
+            .GetByCodeAsync(platformCode ?? string.Empty, ct)
+            .ConfigureAwait(false);
+
+        if (platform is null)
+        {
+            return Ok(ApiResults.Fail<PlatformResolveResult>(
+                BaseApiResponseCode.NotFound, "平台不存在"));
+        }
+
+        return Ok(ApiResults.Ok(new PlatformResolveResult(
+            platform.Id,
+            platform.PlatformCode,
+            platform.MallName,
+            platform.Status,
+            PlatformStatuses.NameOf(platform.Status))));
+    }
 }
+
+/// <summary>平台解析结果。</summary>
+/// <param name="PlatformId">平台 Id。</param>
+/// <param name="PlatformCode">平台编码。</param>
+/// <param name="MallName">商城名称。</param>
+/// <param name="Status">平台状态：1 启用 / 2 停用。</param>
+/// <param name="StatusName">状态中文名。</param>
+public sealed record PlatformResolveResult(
+    long PlatformId, string PlatformCode, string MallName, int Status, string StatusName);
 
 /// <summary>名称查询请求。</summary>
 /// <param name="PlatformIds">平台 Id 集合。</param>

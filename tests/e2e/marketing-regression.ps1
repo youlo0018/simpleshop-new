@@ -24,6 +24,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()
@@ -180,6 +198,20 @@ Invoke-Case 'API-MKT-011' '限领第 2 张仍然成功（上限 2 张）' {
 Invoke-Case 'API-MKT-011b' '超过每人限领（第 3 张被拒）' {
     $r = Post '/coupons/Claim' @{ customerId = $script:customerId; activityId = $script:activityId; quantity = 1 }
     return (-not $r.success) -and $r.message -match '限领'
+}
+
+Invoke-Case 'API-MKT-011c' '领券中心分页返回券类型、门槛、有效期；匿名请求不采信请求体客户 Id' {
+    $r = Post '/coupons/Available' @{
+        platformId = 1; customerId = $script:customerId; page = 1; pageSize = 50
+    }
+    $row = @($r.data.items | Where-Object { $_.activityId -eq "$($script:activityId)" })[0]
+    return $r.success -and $null -ne $row `
+        -and $row.couponType -eq 1 `
+        -and $row.thresholdAmount -eq 100 `
+        -and $row.validDays -eq 30 `
+        -and $row.customerClaimedCount -eq 0 `
+        -and $row.isClaimed -eq $false `
+        -and $row.scopeText -ne ''
 }
 
 Invoke-Case 'API-MKT-012' '🔴 超出领取窗口被拒' {
@@ -890,6 +922,10 @@ Write-Host "`n=== SKL 秒杀：库存划出与回补（S-1）===" -ForegroundCol
 $script:sklProductId = 0
 $script:sklCategoryIds = @()
 $script:sklSkuId = 0
+# 第二个 SKU（库存刻意很小）：用来构造「发布时部分划出」——它的划出量超过常规库存，
+# 于是整场发布失败，而第一个 SKU 的库存已经被划走了。
+$script:sklSku2Id = 0
+$script:sklSku2Stock = 5
 $script:sklOriginPrice = 200
 $script:sklInitStock = 50
 $script:sklSessionId = 0
@@ -952,8 +988,11 @@ Invoke-Case 'API-SKL-000' '准备：一个有 50 件库存、单价 200 的 SKU'
     $body = @{
         productId = 0; spuName = "秒杀商品$($script:suffix)"; categoryId = $c
         deliveryType = 1; mainImage = 'https://cdn.example.com/m.png'
-        specs = @(@{ specName = '颜色'; specValues = @('红') })
-        skus = @(@{ skuCode = "SKL$($script:suffix)"; specValues = @('红'); price = $script:sklOriginPrice; stock = $script:sklInitStock; status = 1 })
+        specs = @(@{ specName = '颜色'; specValues = @('红', '蓝') })
+        skus = @(
+            @{ skuCode = "SKL$($script:suffix)"; specValues = @('红'); price = $script:sklOriginPrice; stock = $script:sklInitStock; status = 1 },
+            @{ skuCode = "SKL2$($script:suffix)"; specValues = @('蓝'); price = $script:sklOriginPrice; stock = $script:sklSku2Stock; status = 1 }
+        )
     }
     $script:sklProductId = [long](Invoke-RestMethod "$Gateway/gateway/products/Save" -Method Post -Headers $script:adminHeaders `
         -Body ($body | ConvertTo-Json -Depth 8) -ContentType 'application/json' -TimeoutSec 30).data
@@ -969,8 +1008,11 @@ Invoke-Case 'API-SKL-000' '准备：一个有 50 件库存、单价 200 的 SKU'
 
     $det = Invoke-RestMethod "$Gateway/gateway/products/Detail?productId=$($script:sklProductId)" -Headers $script:adminHeaders -TimeoutSec 30
     $script:sklSkuId = [long]$det.data.skus[0].id
+    $script:sklSku2Id = [long]$det.data.skus[1].id
 
-    return $script:sklSkuId -gt 0 -and (Get-SkuStock $script:sklSkuId).available -eq $script:sklInitStock
+    return $script:sklSkuId -gt 0 -and $script:sklSku2Id -gt 0 `
+        -and (Get-SkuStock $script:sklSkuId).available -eq $script:sklInitStock `
+        -and (Get-SkuStock $script:sklSku2Id).available -eq $script:sklSku2Stock
 }
 
 Invoke-Case 'API-SKL-001' '建场次：未开始、库存未划出' {
@@ -1148,12 +1190,21 @@ $script:expiredSessionId = 0
 $script:expiredQty = 6
 
 Invoke-Case 'API-SKLX-001' '建一个「已经过了结束时间」的场次（模拟到点没人管）' {
+    # 先清掉上次异常中断留下的到期场次，否则本轮会把它们一起结束，
+    # released 与库存增量都会混入旧数据，断言无法区分本次场次是否真的回补。
+    Invoke-RestMethod 'http://127.0.0.1:5072/internal/marketing/seckill/sessions/FinishExpired' `
+        -Method Post -Body (@{ limit = 50 } | ConvertTo-Json) `
+        -ContentType 'application/json' -TimeoutSec 60 | Out-Null
+
     $now = [DateTime]::UtcNow
     $r = Invoke-RestMethod 'http://127.0.0.1:5072/marketing/seckill/sessions/Create' -Method Post `
         -Body (@{
             sessionName = "自动结束验证-$($script:suffix)"
             startTime = $now.AddHours(-2).ToString('o')
-            endTime   = $now.AddHours(-1).ToString('o')
+            # 结束时间给 5 秒后：发布本身要求「未过结束时间」（过期场次不能开卖，
+            # 否则到点后库存已经被回补过，再开卖等于把还回去的货又卖一遍）。
+            # 发布完等几秒它就到期，正好模拟「到点没人管」。
+            endTime   = $now.AddSeconds(5).ToString('o')
             merchantId = 0
             platformId = 0
             sortOrder = 0
@@ -1181,7 +1232,11 @@ Invoke-Case 'API-SKLX-002' '给到期场次加商品并发布（库存被划走 
     $after = (Get-SkuStock $script:sklSkuId).available
 
     Write-Host ("        {0} 库存 {1} → {2}" -f $pub.message, $before, $after) -ForegroundColor DarkGray
-    return $pub.success -and $before - $after -eq $script:expiredQty
+    if (-not ($pub.success -and $before - $after -eq $script:expiredQty)) { return $false }
+
+    # 等场次真正过期（发布时它还在有效期内），下一步的 FinishExpired 才有东西可结束
+    Start-Sleep -Seconds 6
+    return $true
 }
 
 Invoke-Case 'API-SKLX-003' '🔴 P0 到点自动结束：状态转「已结束」且库存回补（44 → 50）' {
@@ -1217,6 +1272,49 @@ Invoke-Case 'API-SKLX-005' '🔴 重复触发自动结束**不会**二次回补�
 
     # 该场次已是「已结束」，查询条件是「仍在进行中」，所以这一轮扫不到它
     return $r.success -and $r.data.finished -eq 0 -and $before -eq $after
+}
+
+Invoke-Case 'API-SKLX-006' '🔴 P0 发布时**部分划出**后中止：划出的要还、没划出的不能凭空多货' {
+    # 场景：场次里两个商品，A 的库存够、B 的划出量超过常规库存 → 发布整体失败。
+    # 此时 A 的货已经被划走（部分划出），必须：
+    #   ① 场次保持「未开始」但标记「有货在外面」；
+    #   ② 中止场次时把 A 划走的那部分还回去；
+    #   ③ **不能**对 B 执行回补（B 从没划过，seckill_release 是无条件加法，还了就是凭空多货）。
+    $sid = [long](New-SklSession)
+    $addA = Invoke-RestMethod 'http://127.0.0.1:5072/marketing/seckill/sessions/Items/Add' -Method Post `
+        -Body (@{ sessionId = $sid; skuId = $script:sklSkuId; seckillPrice = 66.00; seckillStock = 3; perUserLimit = 1 } | ConvertTo-Json) `
+        -ContentType 'application/json' -TimeoutSec 20
+    $addB = Invoke-RestMethod 'http://127.0.0.1:5072/marketing/seckill/sessions/Items/Add' -Method Post `
+        -Body (@{ sessionId = $sid; skuId = $script:sklSku2Id; seckillPrice = 66.00; seckillStock = 50; perUserLimit = 1 } | ConvertTo-Json) `
+        -ContentType 'application/json' -TimeoutSec 20
+    if (-not ($addA.success -and $addB.success)) { return $false }
+
+    $beforeA = (Get-SkuStock $script:sklSkuId).available
+    $beforeB = (Get-SkuStock $script:sklSku2Id).available
+
+    $pub = Publish-Skl $sid
+    $afterA = (Get-SkuStock $script:sklSkuId).available
+    $afterB = (Get-SkuStock $script:sklSku2Id).available
+
+    Write-Host ("        发布：{0}；A {1}→{2}，B {3}→{4}" -f `
+        $pub.message, $beforeA, $afterA, $beforeB, $afterB) -ForegroundColor DarkGray
+
+    # 发布必须失败；A 被划走 3 件；B 一点没动
+    if ($pub.success) { return $false }
+    if ($beforeA - $afterA -ne 3) { return $false }
+    if ($afterB -ne $beforeB) { return $false }
+
+    $fin = Invoke-RestMethod 'http://127.0.0.1:5072/marketing/seckill/sessions/Finish' -Method Post `
+        -Body (@{ sessionId = $sid; cancel = $true } | ConvertTo-Json) `
+        -ContentType 'application/json' -TimeoutSec 30
+    $finalA = (Get-SkuStock $script:sklSkuId).available
+    $finalB = (Get-SkuStock $script:sklSku2Id).available
+
+    Write-Host ("        中止：{0}；A {1}，B {2}" -f $fin.message, $finalA, $finalB) -ForegroundColor DarkGray
+
+    # A 回到划出前的数量；B 保持原样（凭空多货会让它变成 beforeB + 50）
+    return $fin.success -and $fin.data.releasedTotal -eq 3 `
+        -and $finalA -eq $beforeA -and $finalB -eq $beforeB
 }
 
 Invoke-Case 'API-SKL-020' '准备抢购：再建一个场次，2 件秒杀库存' {
@@ -2015,13 +2113,18 @@ $script:idorCustomerA = 0
 $script:idorCustomerB = 0
 $script:idorTokenA = ''
 
+# 客户账号是平台内账号：注册必须带平台编码（取第一个启用平台，匿名可调）
+$script:platformCode = ((Invoke-RestMethod "$Gateway/gateway/platforms/Public" -TimeoutSec 20).data |
+    Select-Object -First 1).platformCode
+if (-not $script:platformCode) { throw '没有可用平台，营销回归无法执行' }
+
 function New-CustomerViaGateway([string]$tag, [int]$offset) {
     # 手机号必须 11 位且 1[3-9] 开头，两个客户要用不同的号
     $tail = ([string]($script:suffix + $offset)).PadLeft(8, '0').Substring(0, 8)
     return Invoke-RestMethod "$Gateway/gateway/customers/Register" -Method Post -ContentType 'application/json' `
         -Body (@{
             customerName = "$tag$($script:suffix)"; password = 'Gc12345678'
-            phone = "137$tail"; nickName = $tag
+            phone = "137$tail"; nickName = $tag; platformCode = $script:platformCode
         } | ConvertTo-Json) -TimeoutSec 30
 }
 
@@ -2099,6 +2202,18 @@ Invoke-Case 'API-SEC-015' '🔴 客户 A 查别人订单的支付单 → 403（�
     # 支付侧是「处理器直接返回失败」而不是抛异常，所以 HTTP 可能是 200 ——
     # 判业务码，不判 HTTP（本项目两种失败形态并存，只认 success/code 才不会被表象骗过）。
     return (-not $r.success) -and $r.code -eq 403
+}
+
+Invoke-Case 'API-SEC-016' '🔴 客户 A 用客户 B 的 Id 抢购 → 403（否则会用别人的积分与券下单）' {
+    # 抢购会花「请求体里那个客户」的积分、占他的券，并把货寄到请求里的地址。
+    # 之前处理器直接采信请求体里的 CustomerId，等于「用受害人的钱下单、货寄给攻击者」。
+    $r = Post-AsCustomer '/gateway/marketing/seckill/grab' @{
+        itemId = 1; customerId = $script:idorCustomerB
+        receiverName = '攻击者'; receiverPhone = '13800138000'; receiverAddress = '测试地址'
+    } $script:idorTokenA
+
+    # 归属校验在处理器最前面：这里 itemId 是假的也不影响 —— 先撞 403
+    return $r.status -eq 403
 }
 
 Write-Host "`n=== 汇总 ===" -ForegroundColor Cyan

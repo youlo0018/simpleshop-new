@@ -1,171 +1,186 @@
 <template>
-  <view class="page favorite-page">
-    <AppHeader title="我的收藏" :subtitle="`${total} 件`" back />
-
-    <view v-if="loading" class="loading">正在加载…</view>
-    <view v-else-if="items.length" class="favorite-list">
-      <view
-        v-for="item in items"
-        :key="item.spuId"
-        class="favorite-card"
-        :class="{ 'favorite-card--unavailable': !item.available }"
-        @tap="toProduct(item)"
-      >
-        <image class="favorite-card__image" :src="item.mainImage || placeholder" mode="aspectFill" />
-        <view class="favorite-card__body">
-          <text class="favorite-card__name">{{ item.spuName || '商品已下架' }}</text>
-          <text v-if="!item.available" class="favorite-card__status">
-            {{ item.statusName || '已下架' }}
-          </text>
-          <view class="favorite-card__bottom">
-            <text class="favorite-card__price">{{ amount(item.price) }}</text>
-            <text class="favorite-card__remove" @tap.stop="remove(item)">取消收藏</text>
+  <view class="favorites page-shell">
+    <AppHeader title="我的收藏" back />
+    <text class="favorites__count">已收藏 {{ items.length }}/20</text>
+    <view class="product-grid">
+      <view v-for="item in items" :key="item.spuId" class="favorite-card card">
+        <button class="favorite-card__remove" aria-label="取消收藏" @click="remove(item)">
+          <AppIcon type="heart-filled" :size="19" color="#e94a65" />
+        </button>
+        <button class="favorite-card__body" @click="open(item)">
+          <view class="favorite-card__media">
+            <image v-if="item.mainImage" :src="item.mainImage" mode="aspectFill" />
+            <view v-else class="favorite-card__empty">商品</view>
+            <text v-if="!item.available" class="favorite-card__invalid">已失效</text>
           </view>
-        </view>
+          <text class="favorite-card__name">{{ item.spuName || '商品已下架' }}</text>
+          <view class="favorite-card__price-row">
+            <text>{{ money(item.price) }}</text>
+            <text v-if="item.originalPrice > item.price">{{ money(item.originalPrice) }}</text>
+          </view>
+        </button>
       </view>
     </view>
-    <view v-else class="empty">
-      <text class="empty__title">收藏夹是空的</text>
-      <text class="empty__desc">看到喜欢的商品，点一下收藏就能在这里找到</text>
-    </view>
+    <EmptyState v-if="!items.length" title="还没有收藏商品" action="去逛逛" icon="heart" @action="goHome" />
   </view>
 </template>
 
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app';
 import { ref } from 'vue';
+import { onLoad } from '@dcloudio/uni-app';
 import AppHeader from '@/components/AppHeader.vue';
+import EmptyState from '@/components/EmptyState.vue';
+import AppIcon from '@/components/AppIcon.vue';
 import { request } from '@/core/http';
-import { amount } from '@/core/format';
+import { money } from '@/core/format';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
-const loading = ref(true);
 const items = ref<any[]>([]);
-const total = ref(0);
-const placeholder = 'https://cdn.example.com/main.png';
 
 async function load() {
   session.restore();
-  if (!session.profile?.customerId) {
-    uni.navigateTo({ url: '/pages/login/index' });
-    return;
-  }
-
-  loading.value = true;
-  try {
-    const data = await request<any>('/gateway/customers/favorites/List', {
-      method: 'POST',
-      data: { customerId: session.profile.customerId, page: 1, pageSize: 50 },
-      silent: true,
-    });
-    items.value = data?.items || [];
-    total.value = Number(data?.total || 0);
-  } finally {
-    loading.value = false;
-  }
-}
-
-function toProduct(item: any) {
-  if (!item.available) return;
-  uni.navigateTo({ url: `/pages/product/detail?productId=${item.spuId}` });
+  const result = await request<any>('/gateway/customers/favorites/List', {
+    method: 'POST',
+    data: { customerId: session.profile?.customerId, page: 1, pageSize: 20 },
+  });
+  items.value = result.items || [];
 }
 
 async function remove(item: any) {
+  const confirmed = await confirm('取消收藏', `确定不再收藏「${item.spuName}」吗？`);
+  if (!confirmed) return;
   await request('/gateway/customers/favorites/Remove', {
     method: 'POST',
-    data: { customerId: session.profile?.customerId, spuId: item.spuId },
+    data: { customerId: session.profile!.customerId, spuId: item.spuId },
   });
-  uni.showToast({ title: '已取消收藏', icon: 'success' });
-  await load();
+  items.value = items.value.filter((row) => row.spuId !== item.spuId);
 }
 
-onShow(load);
+function open(item: any) {
+  if (!item.available) {
+    uni.showToast({ title: '商品已失效', icon: 'none' });
+    return;
+  }
+  uni.navigateTo({ url: `/pages/product/detail?id=${item.spuId}` });
+}
+
+function goHome() {
+  uni.reLaunch({ url: '/pages/index/index' });
+}
+
+function confirm(title: string, content: string) {
+  return new Promise<boolean>((resolve) => {
+    uni.showModal({ title, content, success: (result) => resolve(result.confirm), fail: () => resolve(false) });
+  });
+}
+
+onLoad(load);
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.favorite-list {
-  display: flex;
-  flex-direction: column;
-  gap: $space-3;
+.favorites__count {
+  display: block;
+  padding: 20rpx 4rpx;
+  color: $muted;
+  font-size: 23rpx;
+}
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20rpx;
 }
 
 .favorite-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.favorite-card__remove {
+  position: absolute;
+  top: 10rpx;
+  right: 10rpx;
+  z-index: 2;
+  width: 60rpx;
+  height: 60rpx;
+  padding: 0;
+  border: 0;
+  border-radius: 999rpx;
+  background: rgba(255, 255, 255, 0.88);
   display: flex;
-  gap: $space-3;
-  padding: $space-3;
-  border-radius: $radius-lg;
-  background: $bg-card;
-}
-
-.favorite-card--unavailable {
-  opacity: 0.58;
-}
-
-.favorite-card__image {
-  width: 180rpx;
-  height: 180rpx;
-  flex: none;
-  border-radius: $radius-md;
-  background: $bg-page;
+  align-items: center;
+  justify-content: center;
 }
 
 .favorite-card__body {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.favorite-card__media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  background: #f1f2f4;
+}
+
+.favorite-card__media image {
+  width: 100%;
+  height: 100%;
+}
+
+.favorite-card__empty {
   display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: $tertiary;
+}
+
+.favorite-card__invalid {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.38);
+  color: #fff;
+  font-size: 26rpx;
 }
 
 .favorite-card__name {
   display: -webkit-box;
   overflow: hidden;
-  font-weight: 600;
-  line-height: 1.4;
+  padding: 18rpx 18rpx 0;
+  font-size: 27rpx;
+  line-height: 1.35;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
-.favorite-card__status {
-  color: $text-3;
-  font-size: $font-note;
-}
-
-.favorite-card__bottom {
+.favorite-card__price-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: baseline;
+  gap: 8rpx;
+  padding: 10rpx 18rpx 18rpx;
 }
 
-.favorite-card__price {
-  color: $danger;
-  font-size: $font-heading;
+.favorite-card__price-row text:first-child {
+  color: $price;
+  font-size: 32rpx;
   font-weight: 600;
 }
 
-.favorite-card__remove {
-  color: $text-2;
-  font-size: $font-note;
-}
-
-.empty {
-  padding: $space-6 $space-4;
-  text-align: center;
-}
-
-.empty__title {
-  display: block;
-  font-size: $font-heading;
-  font-weight: 600;
-}
-
-.empty__desc {
-  display: block;
-  margin-top: $space-2;
-  color: $text-2;
-  font-size: $font-sub;
+.favorite-card__price-row text:last-child {
+  color: $tertiary;
+  font-size: 21rpx;
+  text-decoration: line-through;
 }
 </style>

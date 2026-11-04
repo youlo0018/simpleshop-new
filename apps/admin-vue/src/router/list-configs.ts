@@ -56,7 +56,9 @@ const MERCHANT_AUDIT_ACTIONS = [
     // 于是「通过」这个正向动作的确认按钮会是红色的 —— 看着像要出事。
     danger: false,
     build: (r: any) => ({ merchantId: r.id, auditStatus: 20, auditRemark: '' }),
-    showWhen: (r: any) => r.auditStatus === 10,
+    // 后端数字按字符串下发，比较前统一 Number()（否则 '10' === 10 永远为 false，
+    // 「通过 / 拒绝」按钮在待审核行上根本不出现）
+    showWhen: (r: any) => Number(r.auditStatus) === 10,
     confirm: {
       title: '通过商户审核',
       message: '通过后该商户会出现在小程序里，用户可以浏览并下单。',
@@ -71,7 +73,7 @@ const MERCHANT_AUDIT_ACTIONS = [
     okText: '已拒绝',
     permission: 'merchant:audit',
     build: (r: any, reason: string) => ({ merchantId: r.id, auditStatus: 90, auditRemark: reason }),
-    showWhen: (r: any) => r.auditStatus === 10,
+    showWhen: (r: any) => Number(r.auditStatus) === 10,
     confirm: {
       title: '拒绝商户审核',
       message: '拒绝会连带下架该商户的全部商品。商户需要修改资料后重新提交。',
@@ -684,7 +686,7 @@ export const LISTS = {
     endpoint: '/gateway/platforms/List',
     method: 'POST',
     search: true,
-    searchPlaceholder: '平台名 / 编码',
+    searchPlaceholder: '平台名 / 商城名 / 编码',
     columns: [
       { field: 'platformName', label: '平台名', width: 150 },
       { field: 'platformCode', label: '平台编码', width: 130, format: 'text', mono: true },
@@ -995,7 +997,7 @@ export const LISTS = {
         build: (r: any) => ({ refundId: r.refundId }),
         // 只在待审批的行上出现：已审批的单再点一下只会拿到
         // 「该退款单已处理」这类报错，给一个必然失败的按钮没有意义。
-        showWhen: (r: any) => r.status === 10,
+        showWhen: (r: any) => Number(r.status) === 10,
         confirm: {
           title: '通过退款',
           message: '通过后钱会真的退给客户，且不可撤销。',
@@ -1010,7 +1012,7 @@ export const LISTS = {
         okText: '已拒绝',
         permission: 'refund:reject',
         build: (r: any, reason: string) => ({ refundId: r.refundId, rejectReason: reason }),
-        showWhen: (r: any) => r.status === 10,
+        showWhen: (r: any) => Number(r.status) === 10,
         confirm: {
           title: '拒绝退款',
           message: '客户会看到拒绝原因，请写清楚。',
@@ -1334,6 +1336,129 @@ export const LISTS = {
       { field: 'sortOrder', label: '排序', width: 90, num: true, format: 'count' },
       { field: 'status', label: '状态', width: 100, dict: 'enable' },
       { field: 'updatedAt', label: '更新时间', width: 155, format: 'time' },
+    ],
+  },
+
+  notices: {
+    title: '公告管理',
+    desc: '小程序首页多条公告轮播；平台级内容，商户账号不可维护',
+    createRoute: '/notices/create',
+    createLabel: '新建公告',
+    createPermission: 'notice:manage',
+    rowRoute: (r: any) => `/notices/edit/${r.noticeId}`,
+    editRoute: (r: any) => `/notices/edit/${r.noticeId}`,
+    editPermission: 'notice:manage',
+    actions: [
+      {
+        label: '停用',
+        endpoint: '/gateway/platforms/notices/SetStatus',
+        permission: 'notice:manage',
+        showWhen: (r: any) => Number(r.status) === 1,
+        build: (r: any) => ({ noticeId: r.noticeId, status: 2 }),
+        okText: '已停用',
+      },
+      {
+        label: '启用',
+        endpoint: '/gateway/platforms/notices/SetStatus',
+        permission: 'notice:manage',
+        showWhen: (r: any) => Number(r.status) === 2,
+        build: (r: any) => ({ noticeId: r.noticeId, status: 1 }),
+        okText: '已启用',
+      },
+      {
+        label: '删除',
+        endpoint: '/gateway/platforms/notices/Delete',
+        danger: true,
+        okText: '已删除',
+        permission: 'notice:manage',
+        build: (r: any) => ({ noticeId: r.noticeId }),
+        confirm: {
+          title: '删除公告',
+          message: '删除后小程序首页不再展示这条公告，且不可恢复。',
+          subject: (r: any) => r.title,
+          okText: '删除公告',
+          danger: true,
+        },
+      },
+    ],
+    actionsWidth: 200,
+    endpoint: '/gateway/platforms/notices/List',
+    method: 'POST',
+    tabs: [
+      { label: '全部', value: 0 },
+      { label: '启用', value: 1 },
+      { label: '停用', value: 2 },
+    ],
+    byStatus: true,
+    search: false,
+    columns: [
+      { field: 'title', label: '标题', width: 180 },
+      { field: 'content', label: '内容', width: 360 },
+      { field: 'linkType', label: '跳转', width: 100, format: 'text' },
+      { field: 'sortOrder', label: '排序', width: 80, num: true, format: 'count' },
+      { field: 'status', label: '状态', width: 100, dict: 'enable' },
+      { field: 'createdAt', label: '创建时间', width: 155, format: 'time' },
+    ],
+  },
+
+  hotKeywords: {
+    title: '搜索热搜词',
+    desc: '小程序搜索页的热搜词；按平台维护，商户账号不可维护',
+    createRoute: '/search-hotwords/create',
+    createLabel: '新建热搜词',
+    createPermission: 'search:hotword',
+    rowRoute: (r: any) => `/search-hotwords/edit/${r.keywordId}`,
+    editRoute: (r: any) => `/search-hotwords/edit/${r.keywordId}`,
+    editPermission: 'search:hotword',
+    actions: [
+      {
+        label: '停用',
+        endpoint: '/gateway/search/hot-keywords/SetStatus',
+        permission: 'search:hotword',
+        showWhen: (r: any) => Number(r.status) === 1,
+        build: (r: any) => ({ keywordId: r.keywordId, status: 2 }),
+        okText: '已停用',
+      },
+      {
+        label: '启用',
+        endpoint: '/gateway/search/hot-keywords/SetStatus',
+        permission: 'search:hotword',
+        showWhen: (r: any) => Number(r.status) === 2,
+        build: (r: any) => ({ keywordId: r.keywordId, status: 1 }),
+        okText: '已启用',
+      },
+      {
+        label: '删除',
+        endpoint: '/gateway/search/hot-keywords/Delete',
+        danger: true,
+        okText: '已删除',
+        permission: 'search:hotword',
+        build: (r: any) => ({ keywordId: r.keywordId }),
+        confirm: {
+          title: '删除热搜词',
+          message: '删除后小程序搜索页不再展示该热搜词。',
+          subject: (r: any) => r.keyword,
+          okText: '删除',
+          danger: true,
+        },
+      },
+    ],
+    actionsWidth: 200,
+    endpoint: '/gateway/search/hot-keywords/List',
+    method: 'POST',
+    tabs: [
+      { label: '全部', value: 0 },
+      { label: '启用', value: 1 },
+      { label: '停用', value: 2 },
+    ],
+    byStatus: true,
+    search: true,
+    searchPlaceholder: '关键词',
+    columns: [
+      { field: 'keyword', label: '关键词', width: 220 },
+      { field: 'sortOrder', label: '排序', width: 90, num: true, format: 'count' },
+      { field: 'status', label: '状态', width: 100, dict: 'enable' },
+      { field: 'createdAt', label: '创建时间', width: 155, format: 'time' },
     ],
   },
 };

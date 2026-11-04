@@ -55,12 +55,16 @@ public sealed record AdminPaymentDto(
 /// <param name="ApprovedAt">审批时间。</param>
 /// <param name="CreatedAt">申请时间。</param>
 /// <param name="Items">退款明细行。</param>
+/// <param name="PlatformName">归属平台名称，后台详情直接显示它而不是 Id。</param>
+/// <param name="MerchantName">归属商户名称，后台详情直接显示它而不是 Id。</param>
+/// <param name="Images">客户上传的凭证图片 URL 列表。</param>
 public sealed record AdminRefundDetailDto(
     long RefundId, string RefundNo, string OrderNo, string CustomerName,
     decimal Amount, int RefundType, string RefundTypeName, int Status, string StatusName,
     string Reason, string RejectReason, string ApproverName, string? ApprovedAt, string CreatedAt,
     IReadOnlyList<AdminRefundItemDto> Items,
-    string PlatformName, string MerchantName);
+    string PlatformName, string MerchantName,
+    IReadOnlyList<string>? Images = null);
 
 /// <summary>退款明细行。</summary>
 /// <param name="OrderItemId">原订单行 Id。</param>

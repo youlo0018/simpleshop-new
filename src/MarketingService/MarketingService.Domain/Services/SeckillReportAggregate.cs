@@ -14,6 +14,10 @@ namespace MarketingService.Domain.Services;
 /// 而「哪个场次卖得好」正是秒杀报表要回答的问题。
 /// </param>
 /// <param name="OrderNos">成功抢购产生的订单号，用于向订单服务换 GMV。</param>
+/// <param name="Pv">
+/// 场次 PV：进入秒杀频道并看到该场次的次数（前端埋点 → pv.log → 日志服务聚合）。
+/// 与「参与人数」是两个口径：同一客户刷新十次算 10 次 PV、1 个参与者。
+/// </param>
 /// <remarks>
 /// <b>「参与人数」与「抢购成功数」是两个数</b>：前者是点过的人，
 /// 后者是抢到的人。把两者合成一个「参与数」的话，
@@ -28,15 +32,18 @@ public sealed record SeckillSessionAggregate(
     int StockSold,
     decimal SellOutRate,
     decimal Gmv,
-    IReadOnlyList<string> OrderNos);
+    IReadOnlyList<string> OrderNos,
+    long Pv);
 
 /// <summary>秒杀效果报表汇总。</summary>
 /// <param name="Sessions">逐场次明细，按结束时间倒序。</param>
 /// <param name="TotalParticipants">全部场次的参与人数合计。</param>
 /// <param name="TotalGrabSuccess">全部场次的抢购成功数合计。</param>
 /// <param name="TotalGmv">全部场次的成交额合计（两位小数）。</param>
+/// <param name="TotalPv">全部场次的 PV 合计。</param>
 public sealed record SeckillReport(
     IReadOnlyList<SeckillSessionAggregate> Sessions,
     long TotalParticipants,
     long TotalGrabSuccess,
+    long TotalPv,
     decimal TotalGmv);

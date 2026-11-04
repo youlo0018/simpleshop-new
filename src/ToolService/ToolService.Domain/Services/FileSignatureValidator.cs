@@ -7,6 +7,8 @@ namespace ToolService.Domain.Services;
 /// </remarks>
 public static class FileSignatureValidator
 {
+    /// <summary>扩展名 → 允许的头部签名列表（任一命中即通过）。</summary>
+    /// <remarks>webp 是 RIFF 容器，签名列表为空，走 <c>Matches</c> 里的专用分支校验。</remarks>
     private static readonly Dictionary<string, byte[][]> Signatures = new(StringComparer.OrdinalIgnoreCase)
     {
         ["png"] = new[] { new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A } },

@@ -109,6 +109,13 @@ public sealed class GlobalExceptionMiddleware
         }
     }
 
+    /// <summary>按统一响应体写回错误（响应体里的 code 与 HTTP 状态一致）。</summary>
+    /// <param name="context">当前请求。</param>
+    /// <param name="status">HTTP 状态码。</param>
+    /// <param name="message">面向用户的中文消息。</param>
+    /// <param name="errors">字段级错误（可为空）。</param>
+    /// <returns>异步任务。</returns>
+    /// <remarks>响应已经开始写出时不再尝试改状态（改了只会抛二次异常）。</remarks>
     private static async Task WriteAsync(HttpContext context, HttpStatusCode status, string message, IDictionary<string, string[]>? errors)
     {
         if (context.Response.HasStarted) return;

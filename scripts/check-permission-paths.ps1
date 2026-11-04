@@ -162,16 +162,26 @@ try {
     $cEndPaths = @(
         # 匿名白名单（与 AgileConfig 的 Gateway:AnonymousPaths 对应）
         '/customers/Register', '/customers/Login',
+        '/customers/SendPasswordResetCode', '/customers/ResetPassword',
         '/shop/products/*', '/shop/catalog/*',
+        '/shop/search/HotWords', '/shop/search/Suggest',
         '/design/Store', '/design/PlatformStore',
+        # 平台公开信息：小程序切换平台 / 渲染商城名与主题色 / 协议页，匿名可调
+        '/platforms/Public', '/platforms/PublicDetail',
+        '/platforms/notices/Public',
         '/regions/Public',
-        '/evaluates/List', '/marketing/seckill/sessions/Public',
+        '/evaluates/List',
+        # 秒杀：场次列表匿名可看；曝光埋点同样匿名（游客浏览也计入场次 PV）
+        '/marketing/seckill/sessions/Public', '/marketing/seckill/sessions/View',
+        '/marketing/activities/Public',
         '/coupons/Available',
         # C 端（客户令牌）—— 刻意不绑后台权限点，绑了会把小程序自己挡掉
         '/carts/*', '/orders/*', '/coupons/*', '/evaluates/*',
         '/points/*', '/merchants/Shop/*',
         # 客户资料 / 地址簿 / 收藏：都是「只能操作自己那份」，归属由 CustomerScope 在服务端校验
-        '/customers/Profile', '/customers/UpdateProfile',
+        '/customers/Profile', '/customers/UpdateProfile', '/customers/ChangePassword',
+        # 令牌刷新 / 登出：必须带有效客户令牌（网关先校验会话键），服务端只操作当前会话
+        '/customers/Refresh', '/customers/Logout',
         '/customers/addresses/*', '/customers/favorites/*',
         # payments/Create|Confirm|Query 是客户付款；Simulate 是后台的，已单独绑 order:simulate
         '/payments/Create', '/payments/Confirm', '/payments/Query',
@@ -181,6 +191,7 @@ try {
         # 客户申请退款；归属由 PaymentOwnership 在服务端校验，
         # 后台代客退款仍走同一个入口并持有 refund:apply 权限点
         '/refunds/Apply',
+        '/refunds/My', '/refunds/MyDetail', '/refunds/CancelMy',
         '/marketing/activities/FinalPrice', '/marketing/activities/FinalPriceBatch',
         '/marketing/seckill/grab/result',
         # 报表：/reports/Point 是**客户自己的**积分报表（C 端积分页用），

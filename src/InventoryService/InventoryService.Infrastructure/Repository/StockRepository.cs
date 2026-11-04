@@ -3,7 +3,6 @@ using Collaboration.Domain.Repository;
 using FreeSql;
 using InventoryService.Domain.Entities;
 using InventoryService.Domain.IRepository;
-using Npgsql;
 
 namespace InventoryService.Infrastructure.Repository;
 
@@ -139,8 +138,10 @@ public sealed class StockRepository : CrudRepository<Stock>, IStockRepository
                 outcome = new StockApplyOutcome(true, false, newAvailable, newLocked, newDeducted);
             }), ct);
         }
-        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+        catch (Exception ex) when (PostgresErrors.IsUniqueViolation(ex))
         {
+            // 沿异常链找唯一键冲突：FreeSql 有时把 PostgresException 包在普通 Exception 里，
+            // 直接按类型 catch 会漏掉那条分支（见 CODING_STANDARD 陷阱 32）。
             var flow = await _db.Select<StockFlow>()
                 .Where(a => a.BizNo == operation.BizNo
                             && a.SkuId == operation.SkuId
@@ -268,6 +269,13 @@ public sealed class StockRepository : CrudRepository<Stock>, IStockRepository
             .OrderByDescending(a => a.Id)
             .Limit(Math.Clamp(limit, 1, 500))
             .ToListAsync(ct);
+
+    /// <inheritdoc />
+    public async Task<StockFlow?> GetFlowAsync(
+        long skuId, string bizNo, string action, CancellationToken ct = default)
+        => await _db.Select<StockFlow>()
+            .Where(a => a.SkuId == skuId && a.BizNo == bizNo && a.Action == action)
+            .FirstAsync(ct);
 
     /// <inheritdoc />
     public async Task<List<OrphanLockCandidate>> GetOrphanLockCandidatesAsync(

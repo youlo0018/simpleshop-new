@@ -17,6 +17,10 @@ namespace Collaboration.Domain.Messaging;
 /// <param name="ClientIp">客户端 IP。</param>
 /// <param name="UserAgent">User-Agent。</param>
 /// <param name="RequestId">请求 Id，用于串联同一次请求的多条日志。</param>
+/// <param name="SessionId">
+/// 秒杀场次 Id：只有查询串里带 <c>sessionId</c> 的埋点请求才有值，
+/// 供日志服务把「进入秒杀频道看到某场次」归因到具体场次（BUSINESS.md 17 的场次 PV）。
+/// </param>
 public sealed record PvLogEntry(
     DateTime OccurredAt,
     string Service,
@@ -27,7 +31,8 @@ public sealed record PvLogEntry(
     long ElapsedMs,
     string ClientIp,
     string UserAgent,
-    string RequestId);
+    string RequestId,
+    string? SessionId = null);
 
 /// <summary>写操作日志事件载荷（operation.log）。</summary>
 /// <remarks>只对写方法（POST / PUT / PATCH / DELETE）发，读操作进 pv.log 就够了。</remarks>

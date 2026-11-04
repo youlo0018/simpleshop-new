@@ -82,6 +82,8 @@ public sealed class PointRuleProvider : IPointRuleProvider
     /// <inheritdoc />
     public void Invalidate() => _loadedAt = DateTimeOffset.MinValue;
 
+    /// <summary>缓存是否还在有效期内（30 秒）。</summary>
+    /// <returns>新鲜返回 true。</returns>
     private bool IsFresh()
         => _cached is not null
            && DateTimeOffset.UtcNow - _loadedAt < TimeSpan.FromSeconds(CacheSeconds);
@@ -104,6 +106,12 @@ public sealed class PointRuleProvider : IPointRuleProvider
             ReadRewards(map) ?? d.SignInRewards);
     }
 
+    /// <summary>读一个长整型规则值；缺失或非法（小于下限）时按默认值处理并告警。</summary>
+    /// <param name="map">规则键 → 文本值。</param>
+    /// <param name="key">规则键。</param>
+    /// <param name="fallback">默认值。</param>
+    /// <param name="minValue">允许的最小值。</param>
+    /// <returns>规则值或默认值。</returns>
     private long ReadLong(
         Dictionary<string, string> map, string key, long fallback, long minValue)
     {
@@ -120,6 +128,9 @@ public sealed class PointRuleProvider : IPointRuleProvider
         return value;
     }
 
+    /// <summary>读签到奖励数组（JSON 整数数组）；缺失、非法或含负数时返回 null 走默认值。</summary>
+    /// <param name="map">规则键 → 文本值。</param>
+    /// <returns>奖励数组；不可用时为 null。</returns>
     private IReadOnlyList<long>? ReadRewards(Dictionary<string, string> map)
     {
         if (!map.TryGetValue(PointRuleKeys.SignInRewards, out var raw)) return null;

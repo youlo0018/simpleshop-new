@@ -164,7 +164,7 @@ public record SkuDto(
 /// <param name="MainImage">主图。</param>
 /// <param name="BrandName">品牌名，未选品牌为空串。</param>
 /// <param name="CategoryName">分类名。</param>
-/// <param name="DeliveryType">配送方式，见 <see cref="DeliveryTypes"/>。</param>
+/// <param name="DeliveryType">配送方式，见 <see cref="ProductEnums.DeliveryTypes"/>。</param>
 /// <param name="DeliveryTypeName">配送方式中文名，**后端下发**（4.5）。</param>
 /// <param name="MinPrice">最低售价。</param>
 /// <param name="MaxPrice">最高售价。</param>
@@ -203,6 +203,35 @@ public static class ProductValidators
         services.AddScoped<IValidator<SubmitProductAuditCommand>, SubmitProductAuditValidator>();
         services.AddScoped<IValidator<ChangeProductListingCommand>, ChangeProductListingValidator>();
         services.AddScoped<IValidator<DeleteProductCommand>, DeleteProductValidator>();
+        // 列表 / 详情查询也必须有校验器（规范：写入口与列表查询都要覆盖）：
+        // 分页参数不校验时 PageSize=100000 会变成一次全表拉取。
+        services.AddScoped<IValidator<QueryProductsCommand>, QueryProductsValidator>();
+        services.AddScoped<IValidator<QueryProductDetailCommand>, QueryProductDetailValidator>();
+    }
+
+    /// <summary>商品列表查询校验。</summary>
+    private sealed class QueryProductsValidator : AbstractValidator<QueryProductsCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryProductsValidator()
+        {
+            RuleFor(x => x.Page).GreaterThanOrEqualTo(1).WithMessage("页码必须大于等于 1");
+            RuleFor(x => x.PageSize).InclusiveBetween(1, 100).WithMessage("每页条数需为 1-100");
+            RuleFor(x => x.Keyword).MaximumLength(64).WithMessage("搜索词最多 64 个字符");
+            RuleFor(x => x.CategoryId).GreaterThanOrEqualTo(0).WithMessage("分类 Id 不正确");
+            RuleFor(x => x.BrandId).GreaterThanOrEqualTo(0).WithMessage("品牌 Id 不正确");
+            RuleFor(x => x.MerchantId).GreaterThanOrEqualTo(0).WithMessage("商户 Id 不正确");
+            RuleFor(x => x.Status).GreaterThanOrEqualTo(0).WithMessage("上下架状态不正确");
+            RuleFor(x => x.AuditStatus).GreaterThanOrEqualTo(0).WithMessage("审核状态不正确");
+        }
+    }
+
+    /// <summary>商品详情查询校验。</summary>
+    private sealed class QueryProductDetailValidator : AbstractValidator<QueryProductDetailCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryProductDetailValidator()
+            => RuleFor(x => x.ProductId).GreaterThan(0).WithMessage("商品 Id 必须为正数");
     }
 
     /// <summary>保存商品的入参校验。</summary>

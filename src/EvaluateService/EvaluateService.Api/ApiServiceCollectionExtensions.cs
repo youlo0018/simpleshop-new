@@ -1,3 +1,4 @@
+using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.MediatR;
 using EvaluateService.Application.Features.Evaluate;
 using EvaluateService.Application.Services;
@@ -20,6 +21,8 @@ public static class ApiServiceCollectionExtensions
     public static IServiceCollection AddAppServices(
         this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInternalTokenPropagation();
+
         var appAssembly = typeof(EvaluateValidators).Assembly;
 
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(appAssembly));
@@ -54,7 +57,7 @@ public static class ApiServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(10);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 
     /// <summary>注册商品端口：每日把算好的均分回写到商品表。</summary>
@@ -75,7 +78,7 @@ public static class ApiServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(60);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 
     /// <summary>注册积分端口：发表首评要赠送 20 积分（BUSINESS.md 13.2）。</summary>
@@ -100,6 +103,6 @@ public static class ApiServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(10);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 }

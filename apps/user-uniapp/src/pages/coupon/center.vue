@@ -1,164 +1,139 @@
 <template>
-  <view class="page coupon-page">
-    <AppHeader title="领券中心" subtitle="先领券，再下单更省" back />
-    <view v-if="loading" class="loading">正在加载优惠券…</view>
-    <view v-else-if="activities.length" class="coupon-list">
-      <view v-for="item in activities" :key="item.activityId" class="coupon-card">
-        <view class="coupon-card__left">
-          <text class="coupon-card__value">
-            {{ item.couponTypeName?.includes('折扣') ? '折扣' : `¥${amount(item.discountAmount)}` }}
-          </text>
-          <text class="coupon-card__condition">
-            {{ Number(item.thresholdAmount) > 0 ? `满 ${amount(item.thresholdAmount)} 可用` : '无门槛' }}
-          </text>
-        </view>
-        <view class="coupon-card__body">
-          <text class="coupon-card__name">{{ item.templateName }}</text>
-          <text class="coupon-card__desc">{{ item.activityName }}</text>
-          <text class="coupon-card__time">
-            {{ item.claimStartTime }} 至 {{ item.claimEndTime }}
-          </text>
-          <text class="coupon-card__stock">
-            已领 {{ item.claimedQuantity }} / {{ item.claimQuantity }} · 每人限 {{ item.perUserLimit }} 张
-          </text>
-        </view>
-        <button class="coupon-card__button" :disabled="claiming === item.activityId" @tap="claim(item)">
-          领取
-        </button>
+  <view class="coupon-center page-shell">
+    <AppHeader title="领券中心" back />
+    <view v-for="coupon in coupons" :key="coupon.activityId" class="coupon-card card">
+      <view class="coupon-card__value">
+        <text>{{ coupon.couponType === 2 ? `${coupon.discountRate}折` : money(coupon.discountAmount) }}</text>
+        <text>{{ coupon.thresholdAmount > 0 ? `满 ${coupon.thresholdAmount} 可用` : '无门槛' }}</text>
       </view>
+      <view class="coupon-card__body">
+        <text class="coupon-card__name">{{ coupon.templateName }}</text>
+        <text class="coupon-card__scope">{{ coupon.scopeText }}</text>
+        <text class="coupon-card__valid">领取后 {{ coupon.validDays }} 天有效</text>
+      </view>
+      <button :disabled="coupon.isClaimed" @click="claim(coupon)">{{ coupon.isClaimed ? '已领取' : '领取' }}</button>
     </view>
-    <view v-else class="empty">暂时没有可领取的券</view>
+    <EmptyState v-if="!loading && !coupons.length" title="暂无可领取的券" icon="gift" />
   </view>
 </template>
 
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app';
 import { ref } from 'vue';
+import { onLoad } from '@dcloudio/uni-app';
 import AppHeader from '@/components/AppHeader.vue';
+import EmptyState from '@/components/EmptyState.vue';
 import { request } from '@/core/http';
-import { amount } from '@/core/format';
+import { money } from '@/core/format';
+import { usePlatformStore } from '@/stores/platform';
 import { useSessionStore } from '@/stores/session';
 
+const platform = usePlatformStore();
 const session = useSessionStore();
-const loading = ref(true);
-const claiming = ref('');
-const activities = ref<any[]>([]);
+const coupons = ref<any[]>([]);
+const loading = ref(false);
 
 async function load() {
   loading.value = true;
   try {
-    activities.value = await request<any[]>('/gateway/coupons/Available', {
+    await platform.initialize();
+    session.restore();
+    const result = await request<any>('/gateway/coupons/Available', {
       method: 'POST',
       auth: false,
-      data: {},
-      silent: true,
+      data: {
+        platformId: platform.platformId,
+        customerId: session.profile?.customerId || '0',
+        page: 1,
+        pageSize: 30,
+      },
     });
+    coupons.value = result.items || [];
   } finally {
     loading.value = false;
   }
 }
 
-async function claim(item: any) {
-  session.restore();
-  if (!session.profile?.customerId) {
-    uni.navigateTo({ url: '/pages/login/index' });
+async function claim(coupon: any) {
+  if (!session.profile) {
+    uni.navigateTo({ url: '/pages/login/index?redirect=/pages/coupon/center' });
     return;
   }
-  claiming.value = item.activityId;
-  try {
-    const result = await request<any>('/gateway/coupons/Claim', {
-      method: 'POST',
-      data: {
-        customerId: session.profile.customerId,
-        activityId: item.activityId,
-        quantity: 1,
-      },
-    });
-    uni.showToast({ title: result?.message || '领取成功', icon: 'success' });
-    await load();
-  } finally {
-    claiming.value = '';
-  }
+  await request('/gateway/coupons/Claim', {
+    method: 'POST',
+    data: { customerId: session.profile.customerId, activityId: coupon.activityId, quantity: 1 },
+  });
+  coupon.isClaimed = true;
+  coupon.customerClaimedCount += 1;
+  uni.showToast({ title: '领取成功', icon: 'success' });
 }
 
-onShow(load);
+onLoad(load);
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.coupon-page {
-  padding-bottom: 80rpx;
-}
-
-.coupon-list {
-  display: flex;
-  flex-direction: column;
-  gap: $space-3;
-}
-
 .coupon-card {
   display: flex;
-  align-items: stretch;
-  overflow: hidden;
-  border-radius: $radius-lg;
-  background: #fff;
-}
-
-.coupon-card__left {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  width: 210rpx;
-  padding: $space-3;
-  background: linear-gradient(135deg, #fff0d8, #ffe0bd);
-  color: #b35a00;
-  text-align: center;
+  align-items: center;
+  gap: 20rpx;
+  padding: 22rpx;
+  margin-top: 20rpx;
 }
 
 .coupon-card__value {
-  font-size: 40rpx;
-  font-weight: 700;
+  display: flex;
+  align-items: center;
+  flex: 0 0 170rpx;
+  flex-direction: column;
+  gap: 8rpx;
+  min-height: 140rpx;
+  justify-content: center;
+  border-right: 1rpx dashed #e2e2e6;
 }
 
-.coupon-card__condition {
-  margin-top: 8rpx;
-  font-size: $font-note;
+.coupon-card__value text:first-child {
+  color: $price;
+  font-size: 36rpx;
+  font-weight: 600;
+}
+
+.coupon-card__value text:last-child {
+  color: $muted;
+  font-size: 20rpx;
 }
 
 .coupon-card__body {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: 7rpx;
   min-width: 0;
-  padding: $space-3;
 }
 
 .coupon-card__name {
-  display: block;
-  overflow: hidden;
-  font-size: 32rpx;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 27rpx;
+  font-weight: 500;
 }
 
-.coupon-card__desc,
-.coupon-card__time,
-.coupon-card__stock {
-  display: block;
-  margin-top: 6rpx;
-  color: $text-2;
-  font-size: $font-note;
+.coupon-card__scope,
+.coupon-card__valid {
+  color: $muted;
+  font-size: 21rpx;
 }
 
-.coupon-card__button {
-  align-self: center;
-  height: 64rpx;
-  margin-right: $space-3;
-  padding: 0 $space-3;
-  border-radius: 32rpx;
+.coupon-card > button {
+  height: 60rpx;
+  padding: 0 20rpx;
+  border: 0;
+  border-radius: 999rpx;
   background: $brand;
   color: #fff;
-  font-size: $font-sub;
-  line-height: 64rpx;
+  font-size: 22rpx;
+}
+
+.coupon-card > button[disabled] {
+  background: #ececef;
+  color: $muted;
 }
 </style>

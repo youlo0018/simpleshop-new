@@ -64,7 +64,7 @@ chmod +x ./*.sh        # 首次 clone 后给脚本加执行位（git 不跨平�
 
 压缩包里有：`deploy/data/`（PG 全部业务库 / Redis / AgileConfig / ES / RabbitMQ / Fluentd）、
 `deploy/.env`（管理台凭据 + 内部令牌）、`deploy/keys/`（取货码 RSA 私钥）、
-`deploy/certs/`、`uploads/`，外加根目录的 `RESTORE.md`（恢复说明）。
+`deploy/certs/`、`uploads/`，外加压缩包根目录的 `RESTORE.md`（恢复说明；源文件是 `deploy/linux/RESTORE.md`）。
 这些全部被 `.gitignore` 排除，`git clone` 拿不到——所以要单独搬。
 
 在**新机器**上：
@@ -74,7 +74,7 @@ chmod +x ./*.sh        # 首次 clone 后给脚本加执行位（git 不跨平�
 git clone https://github.com/youlo0018/simpleshop-new.git
 cd simpleshop-new
 
-# ② 压缩包解压到仓库根目录（覆盖；根目录有 RESTORE.md 可以先看）
+# ② 压缩包解压到仓库根目录（覆盖；压缩包根目录的 RESTORE.md 可以先看）
 tar -xzf simpleshop-runtime-data-*.tar.gz -C .
 
 # ③ 按第 2 节做「首次准备」后启动
@@ -131,7 +131,7 @@ cd deploy/linux
 ./start-services.sh --with-log      # 额外起 LogService（先确保 ES 已起）
 ```
 
-启动后：后台 `http://127.0.0.1:5173`、商城 H5 `http://127.0.0.1:5174`、网关 `http://127.0.0.1:5008`。
+启动后：后台 `http://127.0.0.1:5173`、网关 `http://127.0.0.1:5008`。
 
 ## 4. 低内存做了什么（逐项）
 

@@ -109,26 +109,31 @@ public class PromotionCalculatorTests
     [Fact]
     public void 满赠在有折扣活动可用时让位()
     {
-        // 满赠 0 元优惠，满减 20 元 → 选满减
+        // 满赠 0 元优惠，满减 20 元 → 这一行选满减（满赠只在没有折扣可用时命中）
         var gift = Activity(1, ActivityTypes.Gift, threshold: 50m);
         var reduction = Activity(2, ActivityTypes.FullReduction, threshold: 50m, amount: 20m);
 
-        var best = PromotionCalculator.PickBest(
-            new[] { gift, reduction }, new[] { Line(100, 1001, 100m) }, Now);
+        var result = PromotionCalculator.Calculate(
+            new[] { Line(100, 1001, 100m) }, new[] { gift, reduction },
+            Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
 
-        Assert.Equal(2, best.ActivityId);
-        Assert.Equal(20m, best.DiscountAmount);
+        Assert.Single(result.ActivityHits);
+        Assert.Equal(2, result.ActivityHits[0].ActivityId);
+        Assert.Equal(20m, result.ActivityHits[0].DiscountAmount);
+        Assert.Equal(0, result.GiftActivityId);
     }
 
     [Fact]
     public void 满赠在没有折扣可用时命中()
     {
         var gift = Activity(1, ActivityTypes.Gift, threshold: 50m);
-        var best = PromotionCalculator.PickBest(new[] { gift }, new[] { Line(100, 1001, 100m) }, Now);
+        var result = PromotionCalculator.Calculate(
+            new[] { Line(100, 1001, 100m) }, new[] { gift },
+            Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
 
-        Assert.Equal(1, best.ActivityId);
-        Assert.True(best.IsGift);
-        Assert.Equal(0m, best.DiscountAmount);
+        Assert.Equal(1, result.GiftActivityId);
+        Assert.Equal(DiscountSources.Gift, result.Lines[0].Source);
+        Assert.Equal(0m, result.ActivityDiscountTotal);
     }
 
     [Fact]
@@ -137,10 +142,12 @@ public class PromotionCalculatorTests
         var small = Activity(1, ActivityTypes.FullReduction, threshold: 50m, amount: 5m);
         var big = Activity(2, ActivityTypes.FullReduction, threshold: 80m, amount: 20m);
 
-        var best = PromotionCalculator.PickBest(
-            new[] { small, big }, new[] { Line(100, 1001, 100m) }, Now);
+        var result = PromotionCalculator.Calculate(
+            new[] { Line(100, 1001, 100m) }, new[] { small, big },
+            Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
 
-        Assert.Equal(2, best.ActivityId);
+        Assert.Single(result.ActivityHits);
+        Assert.Equal(2, result.ActivityHits[0].ActivityId);
     }
 
     [Fact]
@@ -149,10 +156,12 @@ public class PromotionCalculatorTests
         var low = Activity(1, ActivityTypes.FullReduction, threshold: 50m, amount: 20m);
         var high = Activity(2, ActivityTypes.FullReduction, threshold: 90m, amount: 20m);
 
-        var best = PromotionCalculator.PickBest(
-            new[] { low, high }, new[] { Line(100, 1001, 100m) }, Now);
+        var result = PromotionCalculator.Calculate(
+            new[] { Line(100, 1001, 100m) }, new[] { low, high },
+            Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
 
-        Assert.Equal(2, best.ActivityId);
+        Assert.Single(result.ActivityHits);
+        Assert.Equal(2, result.ActivityHits[0].ActivityId);
     }
 
     [Fact]
@@ -165,10 +174,12 @@ public class PromotionCalculatorTests
         var earlier = Activity(2, ActivityTypes.FullReduction, threshold: 50m, amount: 20m,
             createdAt: Now.AddDays(-5));
 
-        var best = PromotionCalculator.PickBest(
-            new[] { later, earlier }, new[] { Line(100, 1001, 100m) }, Now);
+        var result = PromotionCalculator.Calculate(
+            new[] { Line(100, 1001, 100m) }, new[] { later, earlier },
+            Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
 
-        Assert.Equal(2, best.ActivityId);
+        Assert.Single(result.ActivityHits);
+        Assert.Equal(2, result.ActivityHits[0].ActivityId);
     }
 
     [Fact]
@@ -281,5 +292,106 @@ public class PromotionCalculatorTests
         var quote = PromotionCalculator.Quote(broken, new[] { Line(100, 1001, 100m) }, Now);
 
         Assert.False(quote.Applicable);
+    }
+
+    // ---------------- 逐行贪心与券作用域 ----------------
+
+    private static UserCoupon Coupon(
+        long id, decimal threshold = 0m, decimal amount = 0m,
+        int targetType = TargetTypes.All, string targets = "[]")
+        => new()
+        {
+            Id = id,
+            CouponCode = $"C{id}",
+            CouponType = CouponTypes.FullReduction,
+            ThresholdAmount = threshold,
+            DiscountAmount = amount,
+            ValidDays = 30,
+            TargetType = targetType,
+            Targets = targets,
+            ExpireAt = Now.AddDays(10)
+        };
+
+    [Fact]
+    public void 券作用域外的行仍然参与活动()
+    {
+        // 复现审查里的例子：A 商品被券覆盖、B 商品不在券范围内但满足满减。
+        // 原实现是「整单二选一」：券优先时整单命中券，B 什么优惠都没有，
+        // 顾客比文档口径（BUSINESS 11.2/11.3）多付钱。
+        var lines = new[] { Line(100, 1001, 60m), Line(200, 2001, 100m) };
+        var activity = Activity(1, ActivityTypes.FullReduction, threshold: 100m, amount: 20m);
+        var coupon = Coupon(9, threshold: 50m, amount: 10m,
+            targetType: TargetTypes.BySpu, targets: "[100]");
+
+        var result = PromotionCalculator.Calculate(
+            lines, new[] { activity }, new[] { coupon }, MarketingPriorities.CouponFirst, Now);
+
+        // A 用券（覆盖行不再命中活动），B 单独参与活动：门槛只按 B 的 100 元判，减 20
+        Assert.Equal(10m, result.Lines[0].CouponDiscount);
+        Assert.Equal(0m, result.Lines[0].ActivityDiscount);
+        Assert.Equal(20m, result.Lines[1].ActivityDiscount);
+        Assert.Equal(0m, result.Lines[1].CouponDiscount);
+        Assert.Equal(20m, result.ActivityDiscountTotal);
+        Assert.Equal(10m, result.CouponDiscountTotal);
+        Assert.Equal(130m, result.FinalPrice);
+    }
+
+    [Fact]
+    public void 两个互不重叠的活动分别命中各自的行()
+    {
+        // 逐订单行独立取最大优惠：X 只参加活动 1、Y 只参加活动 2，
+        // 原实现只取「整单最优的一个活动」，另一行一分优惠都拿不到。
+        var lines = new[] { Line(100, 1001, 100m), Line(200, 2001, 100m) };
+        var activities = new[]
+        {
+            Activity(1, ActivityTypes.FullReduction, threshold: 50m, amount: 15m,
+                targetType: TargetTypes.BySku, targets: "[1001]"),
+            Activity(2, ActivityTypes.FullReduction, threshold: 50m, amount: 20m,
+                targetType: TargetTypes.BySku, targets: "[2001]")
+        };
+
+        var result = PromotionCalculator.Calculate(
+            lines, activities, Array.Empty<UserCoupon>(), MarketingPriorities.CouponFirst, Now);
+
+        Assert.Equal(15m, result.Lines[0].ActivityDiscount);
+        Assert.Equal(20m, result.Lines[1].ActivityDiscount);
+        Assert.Equal(35m, result.ActivityDiscountTotal);
+        Assert.Equal(165m, result.FinalPrice);
+
+        // 命中的两个活动都要出现在汇总里：活动报表按活动逐条记参与
+        Assert.Equal(2, result.ActivityHits.Count);
+        Assert.Contains(result.ActivityHits, a => a.ActivityId == 1 && a.DiscountAmount == 15m);
+        Assert.Contains(result.ActivityHits, a => a.ActivityId == 2 && a.DiscountAmount == 20m);
+    }
+
+    [Fact]
+    public void 活动优先时活动命中则券不生效()
+    {
+        var lines = new[] { Line(100, 1001, 100m) };
+        var activity = Activity(1, ActivityTypes.FullReduction, threshold: 50m, amount: 20m);
+        var coupon = Coupon(9, threshold: 50m, amount: 10m);
+
+        var result = PromotionCalculator.Calculate(
+            lines, new[] { activity }, new[] { coupon }, MarketingPriorities.ActivityFirst, Now);
+
+        Assert.Equal(20m, result.Lines[0].ActivityDiscount);
+        Assert.Equal(0m, result.Lines[0].CouponDiscount);
+        Assert.Equal(0, result.CouponId);
+        Assert.Equal(80m, result.FinalPrice);
+    }
+
+    [Fact]
+    public void 活动优先时没有活动可用才轮到券()
+    {
+        var lines = new[] { Line(100, 1001, 100m) };
+        var coupon = Coupon(9, threshold: 50m, amount: 10m);
+
+        var result = PromotionCalculator.Calculate(
+            lines, Array.Empty<PromotionActivity>(), new[] { coupon },
+            MarketingPriorities.ActivityFirst, Now);
+
+        Assert.Equal(10m, result.Lines[0].CouponDiscount);
+        Assert.Equal(9, result.CouponId);
+        Assert.Equal(90m, result.FinalPrice);
     }
 }

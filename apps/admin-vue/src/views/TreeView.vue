@@ -310,6 +310,11 @@ async function submitEditor() {
     for (const [key, value] of Object.entries(body)) {
       if (typeof value === 'string') body[key] = value.trim();
     }
+    // 数字字段留空时不能原样发 ''：后端是 int，空字符串会让整个命令绑定失败。
+    // 省略字段 = 用命令默认值（排序 0），与「没填」的语义一致。
+    for (const field of config.value.fields || []) {
+      if (field.type === 'number' && body[field.name] === '') delete body[field.name];
+    }
     await request(
       editor.mode === 'create' ? config.value.createEndpoint : config.value.updateEndpoint,
       { body },

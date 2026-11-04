@@ -79,6 +79,35 @@ public sealed class GetExceptionStackHandler : IRequestHandler<GetExceptionStack
     }
 }
 
+/// <summary>秒杀场次 PV 统计处理器。</summary>
+public sealed class QueryPvCountBySessionHandler
+    : IRequestHandler<QueryPvCountBySessionCommand, ApiResponse<IReadOnlyList<SessionPvCount>>>
+{
+    private readonly ILogQuery _query;
+
+    /// <summary>构造处理器。</summary>
+    /// <param name="query">日志查询端口。</param>
+    public QueryPvCountBySessionHandler(ILogQuery query) => _query = query;
+
+    /// <inheritdoc />
+    public async Task<ApiResponse<IReadOnlyList<SessionPvCount>>> Handle(
+        QueryPvCountBySessionCommand request, CancellationToken ct)
+    {
+        var counts = await _query
+            .CountPvBySessionAsync(request.Path, request.SessionIds, request.From, request.To, ct)
+            .ConfigureAwait(false);
+
+        // 请求里每个场次都回一行（没有流量的回 0），调用方不用自己补零。
+        var items = request.SessionIds
+            .Distinct()
+            .OrderBy(a => a)
+            .Select(id => new SessionPvCount(id, counts.GetValueOrDefault(id)))
+            .ToList();
+
+        return ApiResults.Ok<IReadOnlyList<SessionPvCount>>(items);
+    }
+}
+
 /// <summary>死信列表查询处理器。</summary>
 public sealed class QueryDeadLettersHandler
     : IRequestHandler<QueryDeadLettersCommand, ApiResponse<DeadLetterPage>>

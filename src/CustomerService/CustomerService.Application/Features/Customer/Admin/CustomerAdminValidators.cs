@@ -37,6 +37,7 @@ public static class CustomerAdminValidators
             RuleFor(x => x.Page).GreaterThanOrEqualTo(1).WithMessage("页码不正确");
             RuleFor(x => x.PageSize).InclusiveBetween(1, MaxPageSize).WithMessage("每页条数不正确");
             RuleFor(x => x.Keyword).MaximumLength(64).WithMessage("搜索关键词过长");
+            RuleFor(x => x.PlatformId).GreaterThanOrEqualTo(0).WithMessage("平台信息不正确");
         }
     }
 

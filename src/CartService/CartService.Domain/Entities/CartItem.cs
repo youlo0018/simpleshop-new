@@ -18,6 +18,16 @@ public class CartItem : EntityBase
     [Column(Name = "customer_id")]
     public long CustomerId { get; set; }
 
+    /// <summary>
+    /// 归属商户 Id；0 表示平台自营，或存量行尚未回填。
+    /// </summary>
+    /// <remarks>
+    /// 结算与下单都是「单商户」：购物车页必须按店铺分组，且只能选同一店铺的商品结算。
+    /// 这个字段在加购时从商品服务带出，不采信客户端。
+    /// </remarks>
+    [Column(Name = "merchant_id")]
+    public long MerchantId { get; set; }
+
     /// <summary>SKU Id。</summary>
     [Column(Name = "sku_id")]
     public long SkuId { get; set; }
@@ -60,4 +70,15 @@ public static class CartRules
 {
     /// <summary>单个 SKU 的数量上限。</summary>
     public const int MaxQuantity = 99;
+
+    /// <summary>
+    /// 购物车条目数上限（不同 SKU 的行数）。
+    /// </summary>
+    /// <remarks>
+    /// 与「下单最多 50 行」对齐：购物车没有条目上限时，用户能把几百个 SKU 加进来，
+    /// 结算页会对每行并发请求商品详情、购物车的批量查询也会把几百个 Id 拼进一个 URL，
+    /// 而真正下单时又被 50 行挡住 —— 用户在结算页点了半天才发现下不了单。
+    /// 所以在加购这一步就限住，提示也更早、更明确。
+    /// </remarks>
+    public const int MaxItems = 50;
 }

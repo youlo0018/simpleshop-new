@@ -19,6 +19,14 @@ namespace MerchantPlatformService.Application.Features.Platform;
 /// <param name="FreeShippingThreshold">满额包邮门槛，0 表示不启用。</param>
 /// <param name="Status">1 启用 / 2 停用。</param>
 /// <param name="Remark">备注。</param>
+/// <param name="ShareTitle">小程序分享标题。</param>
+/// <param name="ShareImage">小程序分享图 URL。</param>
+/// <param name="ServiceWechat">客服微信号。</param>
+/// <param name="ServicePhone">客服电话。</param>
+/// <param name="UserAgreement">用户协议全文。</param>
+/// <param name="PrivacyPolicy">隐私政策全文。</param>
+/// <param name="IcpNo">ICP 备案号。</param>
+/// <param name="MallIntro">商城简介。</param>
 /// <remarks>
 /// <b>仅超级管理员可执行</b>：平台是整个系统的租户顶层，谁能建平台等于谁能在系统里开一块新地盘。
 /// 这条规则不能只靠「别把 platform:create 勾给平台角色」——权限点是运行时可配置的实体，
@@ -39,7 +47,15 @@ public record CreatePlatformCommand(
     decimal ShippingFee = 0m,
     decimal FreeShippingThreshold = 0m,
     int Status = 1,
-    string Remark = "") : IRequest<ApiResponse<long>>, ISuperAdminOnly
+    string Remark = "",
+    string ShareTitle = "",
+    string ShareImage = "",
+    string ServiceWechat = "",
+    string ServicePhone = "",
+    string UserAgreement = "",
+    string PrivacyPolicy = "",
+    string IcpNo = "",
+    string MallIntro = "") : IRequest<ApiResponse<long>>, ISuperAdminOnly
 {
     /// <inheritdoc />
     public string AuditNote => "新建平台";
@@ -65,6 +81,14 @@ public record CreatePlatformCommand(
 /// <param name="FreeShippingThreshold">满额包邮门槛。</param>
 /// <param name="Status">1 启用 / 2 停用。</param>
 /// <param name="Remark">备注。</param>
+/// <param name="ShareTitle">小程序分享标题。</param>
+/// <param name="ShareImage">小程序分享图 URL。</param>
+/// <param name="ServiceWechat">客服微信号。</param>
+/// <param name="ServicePhone">客服电话。</param>
+/// <param name="UserAgreement">用户协议全文。</param>
+/// <param name="PrivacyPolicy">隐私政策全文。</param>
+/// <param name="IcpNo">ICP 备案号。</param>
+/// <param name="MallIntro">商城简介。</param>
 public record UpdatePlatformCommand(
     long PlatformId,
     string PlatformName,
@@ -80,14 +104,22 @@ public record UpdatePlatformCommand(
     decimal ShippingFee = 0m,
     decimal FreeShippingThreshold = 0m,
     int Status = 1,
-    string Remark = "") : IRequest<ApiResponse>;
+    string Remark = "",
+    string ShareTitle = "",
+    string ShareImage = "",
+    string ServiceWechat = "",
+    string ServicePhone = "",
+    string UserAgreement = "",
+    string PrivacyPolicy = "",
+    string IcpNo = "",
+    string MallIntro = "") : IRequest<ApiResponse>;
 
 /// <summary>删除平台。<b>有下级商户时禁止删除，只能停用</b>。</summary>
 /// <param name="PlatformId">平台 Id。</param>
 public record DeletePlatformCommand(long PlatformId) : IRequest<ApiResponse>;
 
 /// <summary>平台列表 / 详情。</summary>
-/// <param name="Keyword">名称 / 编码模糊匹配。</param>
+/// <param name="Keyword">平台名称 / 商城名称 / 平台编码模糊匹配。</param>
 /// <param name="Status">状态过滤，0 表示不限。</param>
 /// <param name="Page">页码，从 1 起。</param>
 /// <param name="PageSize">每页条数。</param>
@@ -103,10 +135,6 @@ public record QueryPlatformsCommand(
 public record QueryPlatformOptionsQuery : IRequest<ApiResponse<List<PlatformOptionDto>>>;
 
 /// <summary>平台下拉项。</summary>
-/// <param name="Id">平台 Id。</param>
-/// <param name="Name">平台名称。<b>前端下拉直接显示它，不显示 Id</b>。</param>
-/// <param name="Code">平台编码。</param>
-/// <summary>平台下拉项。</summary>
 /// <param name="Id">平台 Id，<b>字符串下发</b>（DATA_SPEC 4.6：雪花 Id 前端必须保持字符串）。</param>
 /// <param name="Name">平台名。</param>
 /// <param name="Code">平台编码，小程序按它锁平台。</param>
@@ -120,6 +148,9 @@ public sealed record PlatformOptionDto(string Id, string Name, string Code);
 /// <param name="MallName">商城名称。</param>
 /// <param name="ContactName">联系人。</param>
 /// <param name="ContactPhone">联系电话。</param>
+/// <param name="Logo">平台 Logo。**必须回给前端**：编辑页的数据源是这份列表 DTO，少了它一保存就会把 Logo 清空。</param>
+/// <param name="Notice">平台公告。理由同 Logo：不回传就会被空值覆盖。</param>
+/// <param name="Remark">平台备注。理由同 Logo：不回传就会被空值覆盖。</param>
 /// <param name="PrimaryColor">主题色。</param>
 /// <param name="TabColor">TabBar 选中色。</param>
 /// <param name="BackgroundColor">页面背景色。</param>
@@ -132,6 +163,14 @@ public sealed record PlatformOptionDto(string Id, string Name, string Code);
 /// <param name="CreatedByName">创建人。</param>
 /// <param name="UpdatedAt">最后更新时间。</param>
 /// <param name="OperationName">最后操作人。</param>
+/// <param name="ShareTitle">小程序分享标题。</param>
+/// <param name="ShareImage">小程序分享图 URL。</param>
+/// <param name="ServiceWechat">客服微信号。</param>
+/// <param name="ServicePhone">客服电话。</param>
+/// <param name="UserAgreement">用户协议全文。</param>
+/// <param name="PrivacyPolicy">隐私政策全文。</param>
+/// <param name="IcpNo">ICP 备案号。</param>
+/// <param name="MallIntro">商城简介。</param>
 public sealed record PlatformListDto(
     long Id,
     string PlatformName,
@@ -155,7 +194,17 @@ public sealed record PlatformListDto(
     string CreatedAt,
     string CreatedByName,
     string UpdatedAt,
-    string OperationName);
+    string OperationName,
+    // 新增的公开信息字段必须回给编辑页：列表 DTO 是编辑页的数据源，
+    // 少一个字段，那个输入框在编辑页永远是空的，保存时又把空值写回去。
+    string ShareTitle,
+    string ShareImage,
+    string ServiceWechat,
+    string ServicePhone,
+    string UserAgreement,
+    string PrivacyPolicy,
+    string IcpNo,
+    string MallIntro);
 
 /// <summary>平台分页结果。</summary>
 /// <param name="Items">当前页数据。</param>
@@ -164,3 +213,48 @@ public sealed record PlatformListDto(
 /// <param name="PageSize">每页条数。</param>
 public sealed record PagedPlatformDtos(
     IReadOnlyList<PlatformListDto> Items, long Total, int Page, int PageSize);
+
+/// <summary>小程序平台列表（运行期切换平台用，只返回启用平台）。</summary>
+public record QueryPublicPlatformsQuery : IRequest<ApiResponse<List<PublicPlatformDto>>>;
+
+/// <summary>小程序按平台编码读取公开平台信息。</summary>
+/// <param name="PlatformCode">平台编码，6 位字母，忽略大小写。</param>
+public record QueryPublicPlatformDetailQuery(string PlatformCode)
+    : IRequest<ApiResponse<PublicPlatformDetailDto>>;
+
+/// <summary>平台切换列表项。</summary>
+/// <param name="Id">平台 Id，字符串下发。</param>
+/// <param name="PlatformCode">平台编码。</param>
+/// <param name="PlatformName">平台名称。</param>
+/// <param name="MallName">商城名称，小程序顶部展示。</param>
+/// <param name="Logo">平台 Logo。</param>
+/// <param name="PrimaryColor">主题色。</param>
+/// <param name="TabColor">TabBar 选中色。</param>
+/// <param name="BackgroundColor">页面背景色。</param>
+public sealed record PublicPlatformDto(
+    string Id, string PlatformCode, string PlatformName, string MallName,
+    string Logo, string PrimaryColor, string TabColor, string BackgroundColor);
+
+/// <summary>公开平台信息（首页 / 我的页 / 协议页 / 关于我们用）。</summary>
+/// <param name="Id">平台 Id，字符串下发。</param>
+/// <param name="PlatformCode">平台编码。</param>
+/// <param name="PlatformName">平台名称。</param>
+/// <param name="MallName">商城名称。</param>
+/// <param name="Logo">平台 Logo。</param>
+/// <param name="Notice">公告。</param>
+/// <param name="PrimaryColor">主题色。</param>
+/// <param name="TabColor">TabBar 选中色。</param>
+/// <param name="BackgroundColor">页面背景色。</param>
+/// <param name="ShareTitle">分享标题。</param>
+/// <param name="ShareImage">分享图 URL。</param>
+/// <param name="ServiceWechat">客服微信号。</param>
+/// <param name="ServicePhone">客服电话。</param>
+/// <param name="UserAgreement">用户协议全文。</param>
+/// <param name="PrivacyPolicy">隐私政策全文。</param>
+/// <param name="IcpNo">ICP 备案号。</param>
+/// <param name="MallIntro">商城简介。</param>
+public sealed record PublicPlatformDetailDto(
+    string Id, string PlatformCode, string PlatformName, string MallName, string Logo, string Notice,
+    string PrimaryColor, string TabColor, string BackgroundColor,
+    string ShareTitle, string ShareImage, string ServiceWechat, string ServicePhone,
+    string UserAgreement, string PrivacyPolicy, string IcpNo, string MallIntro);

@@ -24,6 +24,7 @@ public interface ISeckillRepository
     /// <summary>查当前可展示的场次（前台）。</summary>
     /// <param name="nowUtc">当前时间。</param>
     /// <param name="platformId">平台 Id，0 表示不限。</param>
+    /// <param name="limit">最多返回多少个场次（热门路径要有上限，避免一次拉全表）。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>未开始（即将开场）与进行中的场次。</returns>
     /// <remarks>
@@ -31,7 +32,7 @@ public interface ISeckillRepository
     /// 对用户没有意义（没有货可抢），但**不能直接删**——历史订单要能查到秒杀价来源。
     /// </remarks>
     Task<List<SeckillSession>> ListPublicSessionsAsync(
-        DateTime nowUtc, long platformId, CancellationToken ct = default);
+        DateTime nowUtc, long platformId, int limit = 20, CancellationToken ct = default);
 
     /// <summary>查「到点该结束但还没结束」的场次（定时任务用）。</summary>
     /// <param name="nowUtc">当前时间。</param>
@@ -45,6 +46,19 @@ public interface ISeckillRepository
     /// </remarks>
     Task<List<SeckillSession>> ListExpiredRunningSessionsAsync(
         DateTime nowUtc, int limit, CancellationToken ct = default);
+
+    /// <summary>查「已结束 / 已取消但库存还没回补完」的场次（回补重试用）。</summary>
+    /// <param name="limit">最多取多少条。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>状态已到终点、但 <c>StockTransferred</c> 仍为 true 的场次。</returns>
+    /// <remarks>
+    /// <b>回补失败不能只靠「下次再点结束」</b>：结束状态已经落库，
+    /// 再调结束接口时状态条件更新会命中 0 行，原实现直接返回「已是目标状态」——
+    /// 而定时任务只扫「进行中」的场次，于是回补失败一次就等于剩余库存永久消失。
+    /// 这个查询是那条重试路径的唯一入口。
+    /// </remarks>
+    Task<List<SeckillSession>> ListPendingStockReturnSessionsAsync(
+        int limit, CancellationToken ct = default);
 
     /// <summary>插入场次。</summary>
     /// <param name="session">场次。</param>
@@ -84,6 +98,13 @@ public interface ISeckillRepository
     /// <param name="ct">取消令牌。</param>
     /// <returns>商品列表。</returns>
     Task<List<SeckillItem>> ListItemsAsync(long sessionId, CancellationToken ct = default);
+
+    /// <summary>按场次 Id 集合批量取商品（列表页避免逐场次查询的 N+1）。</summary>
+    /// <param name="sessionIds">场次 Id 集合。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>命中场次的商品，按场次与排序字段排列；调用方自行 GroupBy。</returns>
+    Task<List<SeckillItem>> ListItemsBySessionIdsAsync(
+        IReadOnlyCollection<long> sessionIds, CancellationToken ct = default);
 
     /// <summary>按 SKU 找出它参与过的全部秒杀商品（跨场次）。</summary>
     /// <param name="skuId">SKU Id。</param>

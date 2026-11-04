@@ -1,8 +1,12 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Collaboration.Domain.Common;
+using Collaboration.Domain.Configuration;
+using Collaboration.Domain.Infrastructure;
 using CustomerService.Application.Services;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 
 namespace CustomerService.Infrastructure.Services;
 
@@ -23,14 +27,20 @@ namespace CustomerService.Infrastructure.Services;
 public sealed class HttpPointGrantClient : IPointGrantClient
 {
     private readonly HttpClient _http;
+    private readonly IDatabase _sharedRedis;
     private readonly ILogger<HttpPointGrantClient> _logger;
 
     /// <summary>构造客户端。</summary>
     /// <param name="http">指向积分服务的 HttpClient。</param>
+    /// <param name="redis">Redis 连接，用于把发放失败的任务写入补偿队列。</param>
+    /// <param name="redisOptions">Redis 配置，取共享库号。</param>
     /// <param name="logger">日志器。</param>
-    public HttpPointGrantClient(HttpClient http, ILogger<HttpPointGrantClient> logger)
+    public HttpPointGrantClient(
+        HttpClient http, IConnectionMultiplexer redis, IOptions<RedisOptions> redisOptions,
+        ILogger<HttpPointGrantClient> logger)
     {
         _http = http;
+        _sharedRedis = redis.GetDatabase(redisOptions.Value.SharedDatabase);
         _logger = logger;
     }
 
@@ -49,6 +59,7 @@ public sealed class HttpPointGrantClient : IPointGrantClient
             {
                 _logger.LogError("注册赠送积分失败：HTTP {Code}（客户 {CustomerId}）",
                     (int)response.StatusCode, customerId);
+                await QueueCompensationAsync(customerId).ConfigureAwait(false);
                 return false;
             }
 
@@ -59,6 +70,7 @@ public sealed class HttpPointGrantClient : IPointGrantClient
             {
                 _logger.LogError("注册赠送积分失败（{Code}）：{Message}（客户 {CustomerId}）",
                     body?.Code, body?.Message, customerId);
+                await QueueCompensationAsync(customerId).ConfigureAwait(false);
                 return false;
             }
 
@@ -67,9 +79,32 @@ public sealed class HttpPointGrantClient : IPointGrantClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // 积分服务抖动不该让客户注册不了 —— 返回 false，由补偿任务补发。
+            // 积分服务抖动不该让客户注册不了 —— 返回 false，并写入补偿队列由定时任务补发。
             _logger.LogError(ex, "调用积分服务发放注册赠送失败（客户 {CustomerId}）", customerId);
+            await QueueCompensationAsync(customerId).ConfigureAwait(false);
             return false;
+        }
+    }
+
+    /// <summary>把发放失败的任务写入补偿队列。</summary>
+    /// <param name="customerId">客户 Id。</param>
+    /// <returns>异步任务。</returns>
+    /// <remarks>
+    /// 入队也失败（Redis 不可用）时只能留一条明确要求人工补发的 Error ——
+    /// 以前这里写着「由补偿任务补发」但根本没有补偿任务，积分会静默消失。
+    /// </remarks>
+    private async Task QueueCompensationAsync(long customerId)
+    {
+        var queued = await PointGrantCompensationQueue.EnqueueAsync(
+            _sharedRedis,
+            new PointGrantCompensation(
+                PointGrantKinds.Register, customerId, customerId.ToString())).ConfigureAwait(false);
+
+        if (!queued)
+        {
+            _logger.LogError(
+                "注册赠送积分补偿入队失败（Redis 不可用），客户 {CustomerId} 的赠送积分需人工补发",
+                customerId);
         }
     }
 

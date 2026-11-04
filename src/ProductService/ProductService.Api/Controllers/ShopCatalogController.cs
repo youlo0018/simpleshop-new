@@ -3,6 +3,7 @@ using MediatR;
 using Microsoft.AspNetCore.Mvc;
 using ProductService.Application.Features.Brand;
 using ProductService.Application.Features.Category;
+using ProductService.Application.Features.Shop;
 
 namespace ProductService.Api.Controllers;
 
@@ -24,20 +25,37 @@ public sealed class ShopCatalogController : ControllerBase
     public ShopCatalogController(IMediator mediator) => _mediator = mediator;
 
     /// <summary>前台分类树（只含启用中的分类）。</summary>
+    /// <param name="platformId">当前平台 Id；小程序按 platformCode 解析后传入。0 表示不限（仅供调试）。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>分类树，最多三级。</returns>
     [HttpGet("CategoryTree")]
-    public Task<ApiResponse<List<CategoryNodeDto>>> CategoryTree(CancellationToken ct)
+    public Task<ApiResponse<List<CategoryNodeDto>>> CategoryTree(
+        [FromQuery] long platformId = 0, CancellationToken ct = default)
         // includeDisabled 写死 false：前台不接受「把停用的也给我」这种请求
-        => _mediator.Send(new QueryCategoryTreeCommand(false), ct);
+        => _mediator.Send(new QueryCategoryTreeCommand(false, platformId), ct);
 
     /// <summary>前台品牌列表（只含启用中的品牌）。</summary>
     /// <param name="keyword">按品牌名模糊搜索，可为空。</param>
+    /// <param name="platformId">当前平台 Id；0 表示不限（仅供调试）。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>品牌列表。</returns>
     [HttpGet("Brands")]
     public Task<ApiResponse<List<BrandListItem>>> Brands(
-        [FromQuery] string keyword = "", CancellationToken ct = default)
-        // includeDisabled 同样写死 false；品牌列表不分页——前台导航一次要全量
-        => _mediator.Send(new QueryBrandsCommand(1, 200, keyword, false), ct);
+        [FromQuery] string keyword = "", [FromQuery] long platformId = 0,
+        CancellationToken ct = default)
+        // includeDisabled 同样写死 false；前台导航一屏展示，按文档口径取上限 100
+        // （此前传 200，超出「每页 1-100」的约定；仓储已按 1-100 夹取）
+        => _mediator.Send(new QueryBrandsCommand(1, 100, keyword, false, platformId), ct);
+
+    /// <summary>店铺页分类：只返回该商户在售商品实际使用的分类。</summary>
+    /// <param name="merchantId">商户 Id。</param>
+    /// <param name="platformId">当前平台 Id。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>分类 chip 列表。</returns>
+    [HttpGet("MerchantCategories")]
+    public Task<ApiResponse<List<MerchantCategoryDto>>> MerchantCategories(
+        [FromQuery] long merchantId,
+        [FromQuery] long platformId = 0,
+        CancellationToken ct = default)
+        => _mediator.Send(new QueryMerchantCategoriesCommand(merchantId, platformId), ct);
 }

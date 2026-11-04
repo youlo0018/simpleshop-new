@@ -137,6 +137,8 @@ public sealed class CreatePromotionActivityHandler
             SessionId = request.SessionId,
             TargetType = request.TargetType,
             Targets = (request.Targets ?? "[]").Trim(),
+            CoverImage = request.CoverImage.Trim(),
+            Description = request.Description.Trim(),
             StartTime = ToUtc(request.StartTime),
             EndTime = ToUtc(request.EndTime),
             SortOrder = request.SortOrder,
@@ -212,6 +214,8 @@ public sealed class UpdatePromotionActivityHandler
         existing.GiftQuantity = request.GiftQuantity;
         existing.TargetType = request.TargetType;
         existing.Targets = (request.Targets ?? "[]").Trim();
+        existing.CoverImage = request.CoverImage.Trim();
+        existing.Description = request.Description.Trim();
         existing.StartTime = CreatePromotionActivityHandler.ToUtc(request.StartTime);
         existing.EndTime = CreatePromotionActivityHandler.ToUtc(request.EndTime);
         existing.SortOrder = request.SortOrder;
@@ -255,7 +259,8 @@ public sealed class QueryPromotionActivitiesHandler
             a.Status, PromotionNames.StatusName(a.Status),
             a.GiftTemplateId, a.GiftQuantity,
             a.SortOrder, a.Targets, a.PlatformId,
-            PromotionNames.DiscountValue(a.ActivityType, a.DiscountAmount, a.DiscountRate, a.GiftQuantity)))
+            PromotionNames.DiscountValue(a.ActivityType, a.DiscountAmount, a.DiscountRate, a.GiftQuantity),
+            a.CoverImage, a.Description))
             .ToList();
 
         return ApiResults.Ok(new PagedPromotionResult(dtos, total, request.Page, request.PageSize));
@@ -290,7 +295,8 @@ public sealed class GetPromotionActivityHandler
             a.Status, PromotionNames.StatusName(a.Status),
             a.GiftTemplateId, a.GiftQuantity,
             a.SortOrder, a.Targets, a.PlatformId,
-            PromotionNames.DiscountValue(a.ActivityType, a.DiscountAmount, a.DiscountRate, a.GiftQuantity)));
+            PromotionNames.DiscountValue(a.ActivityType, a.DiscountAmount, a.DiscountRate, a.GiftQuantity),
+            a.CoverImage, a.Description));
     }
 }
 
@@ -373,6 +379,9 @@ public sealed class CalculateFinalPriceHandler
     public async Task<ApiResponse<FinalPriceDto>> Handle(
         CalculateFinalPriceCommand request, CancellationToken ct)
     {
+        // 防 IDOR：游客传 0，登录客户必须以令牌里的客户为准。
+        // 直接采信请求体的 customerId 会让客户 A 传 B 的 Id 读到 B 的券包与券码。
+        var customerId = CustomerScope.Resolve(request.CustomerId);
         var nowUtc = DateTime.UtcNow;
 
         var activities = await _promotions.ListActiveAsync(
@@ -392,8 +401,8 @@ public sealed class CalculateFinalPriceHandler
 
         // 游客只算活动价不计券：没有券包可查，直接传空集合。
         // 查一个 customer_id = 0 的券包既是无效查询，也让「游客」这个语义变得含糊。
-        var coupons = request.CustomerId > 0
-            ? await _coupons.ListAvailableAsync(request.CustomerId, nowUtc, ct)
+        var coupons = customerId > 0
+            ? await _coupons.ListAvailableAsync(customerId, nowUtc, ct)
             : new List<UserCoupon>();
 
         var priority = await _promotions.GetPriorityAsync(request.PlatformId, ct);
@@ -403,7 +412,7 @@ public sealed class CalculateFinalPriceHandler
         var dto = new FinalPriceDto(
             result.OriginalTotal, result.ActivityDiscountTotal, result.CouponDiscountTotal,
             result.FinalPrice, result.CouponId, result.CouponCode,
-            result.UsedActivity, request.CustomerId <= 0,
+            result.UsedActivity, customerId <= 0,
             result.Lines.Select(a => new FinalPriceLineDto(
                 a.SpuId, a.SkuId, a.OriginalAmount,
                 a.ActivityDiscount, a.CouponDiscount, a.PayableAmount,
@@ -449,6 +458,8 @@ public sealed class CalculateFinalPriceBatchHandler
     public async Task<ApiResponse<IReadOnlyList<FinalPriceDto>>> Handle(
         CalculateFinalPriceBatchCommand request, CancellationToken ct)
     {
+        // 防 IDOR：同 FinalPrice，游客 0 放行，登录客户以令牌为准。
+        var customerId = CustomerScope.Resolve(request.CustomerId);
         var nowUtc = DateTime.UtcNow;
 
         var activities = await _promotions.ListActiveAsync(
@@ -462,8 +473,8 @@ public sealed class CalculateFinalPriceBatchHandler
                 _products, ct)
             .ConfigureAwait(false);
 
-        var coupons = request.CustomerId > 0
-            ? await _coupons.ListAvailableAsync(request.CustomerId, nowUtc, ct)
+        var coupons = customerId > 0
+            ? await _coupons.ListAvailableAsync(customerId, nowUtc, ct)
             : new List<UserCoupon>();
 
         var priority = await _promotions.GetPriorityAsync(request.PlatformId, ct);
@@ -483,7 +494,7 @@ public sealed class CalculateFinalPriceBatchHandler
             results.Add(new FinalPriceDto(
                 r.OriginalTotal, r.ActivityDiscountTotal, r.CouponDiscountTotal,
                 r.FinalPrice, r.CouponId, r.CouponCode,
-                r.UsedActivity, request.CustomerId <= 0,
+                r.UsedActivity, customerId <= 0,
                 r.Lines.Select(a => new FinalPriceLineDto(
                     a.SpuId, a.SkuId, a.OriginalAmount,
                     a.ActivityDiscount, a.CouponDiscount, a.PayableAmount,
@@ -491,5 +502,60 @@ public sealed class CalculateFinalPriceBatchHandler
         }
 
         return ApiResults.Ok<IReadOnlyList<FinalPriceDto>>(results);
+    }
+}
+
+/// <summary>小程序公开活动列表处理器。</summary>
+/// <remarks>
+/// 只返回启用且落在时间窗内的普通活动（排除秒杀——秒杀有独立频道与库存口径）。
+/// 排序固定：SortOrder → 开始时间 → Id，保证同一批活动每次返回顺序一致。
+/// </remarks>
+public sealed class QueryPublicActivitiesHandler
+    : IRequestHandler<QueryPublicActivitiesCommand, ApiResponse<List<PublicActivityDto>>>
+{
+    private readonly IPromotionRepository _promotions;
+
+    /// <summary>构造处理器。</summary>
+    /// <param name="promotions">活动仓储。</param>
+    public QueryPublicActivitiesHandler(IPromotionRepository promotions) => _promotions = promotions;
+
+    /// <summary>执行查询。</summary>
+    /// <param name="request">查询命令。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>进行中的活动卡片列表。</returns>
+    public async Task<ApiResponse<List<PublicActivityDto>>> Handle(
+        QueryPublicActivitiesCommand request, CancellationToken ct)
+    {
+        var nowUtc = DateTime.UtcNow;
+
+        // ListActiveAsync 已经在库里筛过「启用 + 时间窗」，这里只做普通活动与商户维度过滤
+        var activities = await _promotions
+            .ListActiveAsync(request.PlatformId, 0, nowUtc, ct)
+            .ConfigureAwait(false);
+
+        var limit = Math.Clamp(request.Limit, 1, 50);
+        var items = activities
+            .Where(a => a.ActivityType != ActivityTypes.Seckill)
+            .Where(a => request.MerchantId <= 0 || a.MerchantId == request.MerchantId)
+            .Where(a => request.ActivityId <= 0 || a.Id == request.ActivityId)
+            .OrderBy(a => a.SortOrder)
+            .ThenBy(a => a.StartTime)
+            .ThenBy(a => a.Id)
+            .Take(limit)
+            .Select(a => new PublicActivityDto(
+                a.Id.ToString(),
+                a.ActivityName,
+                a.ActivityType,
+                PromotionNames.TypeName(a.ActivityType),
+                a.CoverImage,
+                a.Description,
+                PromotionTimeFormat.UtcIso(a.StartTime),
+                PromotionTimeFormat.UtcIso(a.EndTime),
+                PromotionNames.DiscountValue(
+                    a.ActivityType, a.DiscountAmount, a.DiscountRate, a.GiftQuantity),
+                a.SortOrder))
+            .ToList();
+
+        return ApiResults.Ok(items);
     }
 }

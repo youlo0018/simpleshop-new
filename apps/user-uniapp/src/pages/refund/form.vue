@@ -1,133 +1,274 @@
 <template>
-  <view class="page refund-form">
-    <AppHeader title="申请退款" :subtitle="orderNo" back />
-
-    <view class="panel summary">
-      <text class="summary__label">退款方式</text>
-      <text class="summary__value">整单退款（含运费）</text>
-      <text class="summary__hint">提交后等待平台或商户审批；审批通过才真正退回。</text>
+  <view class="refund-form page-shell">
+    <AppHeader title="申请退款" back />
+    <view v-if="order" class="refund-form__body">
+      <view v-for="line in order.items" :key="line.orderItemId" class="line card">
+        <view class="line__head">
+          <button class="check" :class="{ 'check--on': selected[line.orderItemId] }" @click="toggle(line)">
+            {{ selected[line.orderItemId] ? '✓' : '' }}
+          </button>
+          <image class="line__image" :src="line.image" mode="aspectFill" />
+          <view class="line__body">
+            <text>{{ line.productName }}</text>
+            <text class="muted">{{ line.skuSpecText }}</text>
+            <text>可退 {{ line.quantity - (line.refundedQuantity || 0) }} 件</text>
+          </view>
+        </view>
+        <view v-if="selected[line.orderItemId]" class="line__form">
+          <view><text>退件数</text><input v-model.number="quantities[line.orderItemId]" type="number" /></view>
+          <view><text>退款金额</text><input v-model.number="amounts[line.orderItemId]" type="digit" /></view>
+        </view>
+      </view>
+      <view class="reasons card">
+        <text class="section-title">退款原因</text>
+        <view class="reasons__chips">
+          <button v-for="reason in reasons" :key="reason" :class="{ active: selectedReason === reason }" @click="selectedReason = reason">{{ reason }}</button>
+        </view>
+        <input v-model="reason" maxlength="200" placeholder="请补充说明（2-200 字）" />
+      </view>
+      <view class="uploader card">
+        <text class="section-title">凭证图片（最多 9 张）</text>
+        <view class="uploader__grid">
+          <image v-for="(image, index) in images" :key="index" :src="image" mode="aspectFill" />
+          <button v-if="images.length < 9" aria-label="添加图片" @click="chooseImages">
+            <AppIcon type="plusempty" :size="24" color="#8a8a8f" />
+          </button>
+        </view>
+      </view>
+      <view class="tips card">
+        部分退款不退运费；退款不退券；积分按比例回收；当前为模拟支付，审批通过后原路退回模拟账户。
+      </view>
+      <button class="btn-primary" :disabled="submitting" @click="submit">提交退款申请</button>
     </view>
-
-    <view class="panel reason">
-      <text class="reason__label">退款原因</text>
-      <textarea
-        v-model="reason"
-        class="reason__input"
-        maxlength="200"
-        placeholder="请填写退款原因（2-200 个字符）"
-      />
-      <text class="reason__count">{{ reason.length }} / 200</text>
-    </view>
-
-    <button class="button-primary refund-form__submit" :loading="submitting" @tap="submit">
-      提交退款申请
-    </button>
   </view>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { reactive, ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
 import AppHeader from '@/components/AppHeader.vue';
-import { request } from '@/core/http';
+import AppIcon from '@/components/AppIcon.vue';
+import { request, uploadImage } from '@/core/http';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
+const order = ref<any>(null);
 const orderNo = ref('');
-const orderId = ref('');
+const selected = reactive<Record<string, boolean>>({});
+const quantities = reactive<Record<string, number>>({});
+const amounts = reactive<Record<string, number>>({});
+const reasons = ['不喜欢 / 不想要', '质量问题', '发错货', '少件漏发', '其他'];
+const selectedReason = ref('');
 const reason = ref('');
+const images = ref<string[]>([]);
 const submitting = ref(false);
 
+async function load() {
+  session.restore();
+  order.value = await request<any>('/gateway/orders/Detail', {
+    params: { customerId: session.profile?.customerId, orderNo: orderNo.value },
+  });
+  for (const line of order.value.items || []) {
+    const remainingQuantity = Math.max(0, Number(line.quantity || 0) - Number(line.refundedQuantity || 0));
+    const refundableAmount = Number(line.refundableAmount > 0
+      ? line.refundableAmount
+      : line.payableAmount || 0);
+    if (remainingQuantity > 0 && refundableAmount > 0) {
+      selected[line.orderItemId] = true;
+      quantities[line.orderItemId] = remainingQuantity;
+      amounts[line.orderItemId] = Number(refundableAmount.toFixed(2));
+    }
+  }
+}
+
+function toggle(line: any) {
+  selected[line.orderItemId] = !selected[line.orderItemId];
+}
+
+async function chooseImages() {
+  const result = await new Promise<string[]>((resolve) => {
+    uni.chooseImage({
+      count: 9 - images.value.length,
+      success: (value) => resolve(value.tempFilePaths as string[]),
+      fail: () => resolve([]),
+    });
+  });
+  for (const path of result) {
+    try { images.value.push(await uploadImage(path)); } catch { /* 单张失败可重试 */ }
+  }
+}
+
 async function submit() {
-  const text = reason.value.trim();
-  if (text.length < 2 || text.length > 200) {
-    uni.showToast({ title: '退款原因需为 2-200 个字符', icon: 'none' });
+  const items = Object.keys(selected)
+    .filter((id) => selected[id])
+    .map((id) => ({
+      orderItemId: id,
+      quantity: Number(quantities[id] || 0),
+      amount: Number(amounts[id] || 0),
+    }));
+  if (!items.length) {
+    uni.showToast({ title: '请选择退款商品', icon: 'none' });
     return;
   }
-
+  const finalReason = [selectedReason.value, reason.value.trim()].filter(Boolean).join('：');
+  if (finalReason.length < 2) {
+    uni.showToast({ title: '请选择或填写退款原因', icon: 'none' });
+    return;
+  }
   submitting.value = true;
   try {
     await request('/gateway/refunds/Apply', {
       method: 'POST',
       data: {
-        orderId: orderId.value,
+        customerId: session.profile!.customerId,
+        orderId: order.value.orderId,
         orderNo: orderNo.value,
-        items: [],
-        reason: text,
+        items,
+        reason: finalReason,
+        images: images.value,
       },
     });
-    uni.showToast({ title: '退款申请已提交', icon: 'success' });
-    setTimeout(() => uni.navigateBack(), 600);
+    uni.showToast({ title: '已提交', icon: 'success' });
+    setTimeout(() => uni.redirectTo({ url: '/pages/refund/list' }), 350);
   } finally {
     submitting.value = false;
   }
 }
 
-onLoad((options) => {
-  session.restore();
-  if (!session.profile?.customerId) {
-    uni.navigateTo({ url: '/pages/login/index' });
-    return;
-  }
-
-  orderNo.value = String(options?.orderNo || '');
-  orderId.value = String(options?.orderId || '');
+onLoad((query) => {
+  orderNo.value = String(query?.orderNo || '');
+  load();
 });
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.refund-form {
-  padding-bottom: 180rpx;
+.refund-form__body {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+  padding-top: 20rpx;
 }
 
-.panel {
-  margin-bottom: $space-3;
-  padding: $space-4;
+.line,
+.reasons,
+.uploader,
+.tips {
+  padding: 22rpx;
 }
 
-.summary__label,
-.reason__label {
-  display: block;
-  color: $text-2;
-  font-size: $font-sub;
+.line__head {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
 }
 
-.summary__value {
-  display: block;
-  margin-top: $space-2;
-  font-size: $font-heading;
-  font-weight: 600;
+.check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42rpx;
+  height: 42rpx;
+  flex: 0 0 42rpx;
+  border: 2rpx solid #cfcfd4;
+  border-radius: 999rpx;
+  color: #fff;
 }
 
-.summary__hint {
-  display: block;
-  margin-top: $space-2;
-  color: $text-2;
-  font-size: $font-note;
-  line-height: 1.5;
+.check--on {
+  border-color: $brand;
+  background: $brand;
 }
 
-.reason__input {
+.line__image {
+  width: 136rpx;
+  height: 136rpx;
+  flex: 0 0 136rpx;
+  border-radius: 16rpx;
+  background: #f1f2f4;
+}
+
+.line__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  font-size: 24rpx;
+}
+
+.line__form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16rpx;
+  margin-top: 18rpx;
+  padding-top: 18rpx;
+  border-top: 1rpx solid $line;
+}
+
+.line__form view {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  color: $muted;
+  font-size: 22rpx;
+}
+
+.line__form input,
+.reasons input {
+  height: 72rpx;
+  padding: 0 16rpx;
+  border-radius: 12rpx;
+  background: #f5f6f8;
+  color: $text;
+  font-size: 24rpx;
+}
+
+.reasons__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin: 18rpx 0;
+}
+
+.reasons__chips button {
+  height: 58rpx;
+  padding: 0 20rpx;
+  border: 1rpx solid $line;
+  border-radius: 999rpx;
+  background: #fff;
+  font-size: 22rpx;
+}
+
+.reasons__chips button.active {
+  border-color: $selection-border;
+  background: $selection-bg;
+  color: $selection-text;
+  font-weight: 500;
+}
+
+.uploader__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12rpx;
+  margin-top: 18rpx;
+}
+
+.uploader__grid image,
+.uploader__grid button {
   width: 100%;
-  min-height: 220rpx;
-  margin-top: $space-2;
-  font-size: $font-body;
+  aspect-ratio: 1;
+  border-radius: 12rpx;
+}
+
+.uploader__grid button {
+  border: 1rpx dashed #c9c9ce;
+  background: #fafafa;
+  font-size: 40rpx;
+}
+
+.tips {
+  color: $muted;
+  font-size: 22rpx;
   line-height: 1.6;
-}
-
-.reason__count {
-  display: block;
-  color: $text-3;
-  font-size: $font-note;
-  text-align: right;
-}
-
-.refund-form__submit {
-  position: fixed;
-  right: $space-4;
-  bottom: calc(env(safe-area-inset-bottom) + $space-4);
-  left: $space-4;
 }
 </style>

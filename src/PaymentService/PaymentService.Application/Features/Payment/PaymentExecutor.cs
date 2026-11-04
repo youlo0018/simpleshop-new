@@ -68,6 +68,32 @@ public static class PaymentExecutor
 
         if (order.Status != OrderStatusNumbers.PendingPayment)
         {
+            // 订单已经在「已支付之后」的状态，但支付单还是待支付：上一次收尾只完成了一半
+            // （订单侧成功、支付单状态没写进去）。这里**自愈**：把支付单补成已支付再返回成功，
+            // 而不是回一句「只有待支付的订单可以支付」—— 那会让调用方以为出了问题，
+            // 而实际上钱和订单都已经处理完了。
+            // 已关闭(91) / 已退款(60) 不走自愈：那不是「已支付」。
+            if (order.Status is OrderStatusNumbers.PendingShipment
+                or OrderStatusNumbers.PendingReceipt
+                or OrderStatusNumbers.PendingPickup
+                or OrderStatusNumbers.Completed)
+            {
+                var healed = await payments.TryChangeStatusAsync(
+                    payment.Id, PaymentStatuses.Pending, PaymentStatuses.Paid,
+                    DateTime.UtcNow, string.Empty, ct).ConfigureAwait(false);
+
+                if (healed == 0)
+                {
+                    logger?.LogError(
+                        "订单 {OrderNo} 已支付，但支付单 {PaymentNo} 的自愈更新未命中（状态已被并发修改），需对账",
+                        no, payment.PaymentNo);
+                }
+
+                var refreshed = await payments.GetByOrderNoAsync(no, ct).ConfigureAwait(false);
+                return ApiResults.Ok(
+                    PaymentAssembler.Build(refreshed ?? payment, order.StatusName), "订单已支付");
+            }
+
             return ApiResults.Fail<PaymentDto>(
                 BaseApiResponseCode.OrderStateInvalid,
                 $"当前订单状态是「{order.StatusName}」，只有待支付的订单可以支付");
@@ -81,9 +107,19 @@ public static class PaymentExecutor
                 BaseApiResponseCode.RemoteCallFailed, "订单服务处理失败，请稍后重试");
         }
 
-        await payments.TryChangeStatusAsync(
+        var changed = await payments.TryChangeStatusAsync(
             payment.Id, PaymentStatuses.Pending, PaymentStatuses.Paid,
             DateTime.UtcNow, string.Empty, ct).ConfigureAwait(false);
+
+        if (changed == 0)
+        {
+            // 订单已经置为已支付，支付单却没写进去：这是不一致状态，必须响亮地记下来。
+            // 下一次再确认这笔单会走「订单已支付」分支自愈（把支付单补成已支付），
+            // 定时对账任务也会兜底，所以这里不把调用方挡回去（钱确实已经收下、订单也确实付了）。
+            logger?.LogError(
+                "订单 {OrderNo} 已支付，但支付单 {PaymentNo} 状态更新未命中（可能被并发修改），等待下次确认或对账任务自愈",
+                no, payment.PaymentNo);
+        }
 
         var updated = await payments.GetByOrderNoAsync(no, ct).ConfigureAwait(false);
         return ApiResults.Ok(PaymentAssembler.Build(updated ?? payment, order.StatusName), "支付成功");

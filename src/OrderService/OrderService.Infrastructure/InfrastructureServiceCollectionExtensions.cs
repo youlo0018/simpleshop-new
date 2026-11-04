@@ -1,3 +1,4 @@
+using Collaboration.Domain.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -31,6 +32,8 @@ public static class InfrastructureServiceCollectionExtensions
     public static IServiceCollection AddOrderInfrastructure(
         this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInternalTokenPropagation();
+
         services.AddScoped<IOrderStore, OrderStore>();
         services.AddScoped<IOrderCreateLock, RedisOrderCreateLock>();
 
@@ -110,6 +113,6 @@ public static class InfrastructureServiceCollectionExtensions
         {
             client.BaseAddress = address;
             client.Timeout = timeout;
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 }

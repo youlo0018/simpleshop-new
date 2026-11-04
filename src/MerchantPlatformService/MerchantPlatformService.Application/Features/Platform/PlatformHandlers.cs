@@ -34,6 +34,14 @@ public sealed class CreatePlatformHandler
             Logo = request.Logo.Trim(),
             MallName = request.MallName.Trim(),
             Notice = request.Notice.Trim(),
+            ShareTitle = request.ShareTitle.Trim(),
+            ShareImage = request.ShareImage.Trim(),
+            ServiceWechat = request.ServiceWechat.Trim(),
+            ServicePhone = request.ServicePhone.Trim(),
+            UserAgreement = request.UserAgreement.Trim(),
+            PrivacyPolicy = request.PrivacyPolicy.Trim(),
+            IcpNo = request.IcpNo.Trim(),
+            MallIntro = request.MallIntro.Trim(),
             PrimaryColor = request.PrimaryColor.Trim(),
             TabColor = request.TabColor.Trim(),
             BackgroundColor = request.BackgroundColor.Trim(),
@@ -94,6 +102,14 @@ public sealed class UpdatePlatformHandler : IRequestHandler<UpdatePlatformComman
         platform.Logo = T(request.Logo);
         platform.MallName = T(request.MallName);
         platform.Notice = T(request.Notice);
+        platform.ShareTitle = T(request.ShareTitle);
+        platform.ShareImage = T(request.ShareImage);
+        platform.ServiceWechat = T(request.ServiceWechat);
+        platform.ServicePhone = T(request.ServicePhone);
+        platform.UserAgreement = T(request.UserAgreement);
+        platform.PrivacyPolicy = T(request.PrivacyPolicy);
+        platform.IcpNo = T(request.IcpNo);
+        platform.MallIntro = T(request.MallIntro);
         platform.PrimaryColor = T(request.PrimaryColor);
         platform.TabColor = T(request.TabColor);
         platform.BackgroundColor = T(request.BackgroundColor);
@@ -224,7 +240,15 @@ public sealed class QueryPlatformsHandler
             PlatformAssembler.FormatTime(a.CreatedAt),
             a.CreatedByName,
             a.UpdatedAt is null ? string.Empty : PlatformAssembler.FormatTime(a.UpdatedAt.Value),
-            a.OperationName)).ToList();
+            a.OperationName,
+            a.ShareTitle,
+            a.ShareImage,
+            a.ServiceWechat,
+            a.ServicePhone,
+            a.UserAgreement,
+            a.PrivacyPolicy,
+            a.IcpNo,
+            a.MallIntro)).ToList();
 
         return ApiResults.Ok(new PagedPlatformDtos(items, page.Total, page.Page, page.PageSize));
     }
@@ -273,5 +297,85 @@ public sealed class QueryPlatformOptionsHandler
             .ToList();
 
         return Task.FromResult(ApiResults.Ok(items));
+    }
+}
+
+/// <summary>小程序平台列表处理器（P31 运行期切换平台）。</summary>
+/// <remarks>
+/// 只返回启用平台，顺序按 Id 升序（后台的排序口径），小程序端当前平台自行置顶。
+/// 匿名可调：切换平台发生在登录之前。
+/// </remarks>
+public sealed class QueryPublicPlatformsHandler
+    : IRequestHandler<QueryPublicPlatformsQuery, ApiResponse<List<PublicPlatformDto>>>
+{
+    private readonly IPlatformRepository _platforms;
+
+    /// <summary>构造处理器。</summary>
+    /// <param name="platforms">平台仓储。</param>
+    public QueryPublicPlatformsHandler(IPlatformRepository platforms) => _platforms = platforms;
+
+    /// <summary>执行查询。</summary>
+    /// <param name="request">空查询。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>启用平台列表。</returns>
+    public Task<ApiResponse<List<PublicPlatformDto>>> Handle(
+        QueryPublicPlatformsQuery request, CancellationToken ct)
+    {
+        var items = _platforms.ListEnabled(ct)
+            .Select(a => new PublicPlatformDto(
+                a.Id.ToString(), a.PlatformCode, a.PlatformName, a.MallName,
+                a.Logo, a.PrimaryColor, a.TabColor, a.BackgroundColor))
+            .ToList();
+
+        return Task.FromResult(ApiResults.Ok(items));
+    }
+}
+
+/// <summary>公开平台详情处理器（首页 / 我的页 / 协议页 / 关于我们用）。</summary>
+public sealed class QueryPublicPlatformDetailHandler
+    : IRequestHandler<QueryPublicPlatformDetailQuery, ApiResponse<PublicPlatformDetailDto>>
+{
+    private readonly IPlatformRepository _platforms;
+
+    /// <summary>构造处理器。</summary>
+    /// <param name="platforms">平台仓储。</param>
+    public QueryPublicPlatformDetailHandler(IPlatformRepository platforms) => _platforms = platforms;
+
+    /// <summary>执行查询。</summary>
+    /// <param name="request">按平台编码查询。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>公开平台信息；不存在或已停用返回 404。</returns>
+    /// <remarks>
+    /// 停用平台与不存在<b>返回同一个 404</b>：区分开等于告诉别人「这个平台存在，只是停了」，
+    /// 与店铺详情的口径一致。
+    /// </remarks>
+    public async Task<ApiResponse<PublicPlatformDetailDto>> Handle(
+        QueryPublicPlatformDetailQuery request, CancellationToken ct)
+    {
+        var platform = await _platforms.GetByCodeAsync(request.PlatformCode.Trim(), ct);
+        if (platform is null || platform.Status != PlatformStatuses.Enabled)
+        {
+            return ApiResults.Fail<PublicPlatformDetailDto>(
+                BaseApiResponseCode.NotFound, "平台不存在或已停用");
+        }
+
+        return ApiResults.Ok(new PublicPlatformDetailDto(
+            platform.Id.ToString(),
+            platform.PlatformCode,
+            platform.PlatformName,
+            platform.MallName,
+            platform.Logo,
+            platform.Notice,
+            platform.PrimaryColor,
+            platform.TabColor,
+            platform.BackgroundColor,
+            platform.ShareTitle,
+            platform.ShareImage,
+            platform.ServiceWechat,
+            platform.ServicePhone,
+            platform.UserAgreement,
+            platform.PrivacyPolicy,
+            platform.IcpNo,
+            platform.MallIntro));
     }
 }

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    播种权限树：5 个业务大类 + 23 个功能模块 + 77 个权限点。
+    播种权限树：5 个业务大类 + 25 个功能模块 + 80 个权限点。
 .DESCRIPTION
     依据 BUSINESS.md 5.2 的权限点清单与 5.4 的 4 层树结构。
     幂等：已存在的 code 不重复插入，先删后插按 code 对齐。
@@ -25,20 +25,21 @@ $groups = @(
     @{ Id = 2005; Name = '数据报表'; Sort = 5 }
 )
 
-# ---- 第 2 层：功能模块（23 个），Key 为大类 Id，Value 为 @{Id;Name} ----
+# ---- 第 2 层：功能模块（25 个），Key 为大类 Id，Value 为 @{Id;Name} ----
 $modules = [ordered]@{
     '2001' = @(@{ Id = 2101; Name = '账号' }, @{ Id = 2102; Name = '客户' }, @{ Id = 2103; Name = '角色权限' },
              @{ Id = 2104; Name = '平台' }, @{ Id = 2105; Name = '商户' }, @{ Id = 2106; Name = '地区地址' },
              @{ Id = 2107; Name = '分类' })
-    '2002' = @(@{ Id = 2108; Name = '品牌' }, @{ Id = 2109; Name = '商品' }, @{ Id = 2110; Name = '库存' })
+    '2002' = @(@{ Id = 2108; Name = '品牌' }, @{ Id = 2109; Name = '商品' }, @{ Id = 2110; Name = '库存' },
+             @{ Id = 2125; Name = '搜索热搜词' })
     '2003' = @(@{ Id = 2111; Name = '订单' }, @{ Id = 2112; Name = '支付' }, @{ Id = 2113; Name = '退款' })
     '2004' = @(@{ Id = 2114; Name = '营销活动' }, @{ Id = 2115; Name = '券' }, @{ Id = 2116; Name = '营销配置' },
              @{ Id = 2117; Name = '限时抢购' }, @{ Id = 2118; Name = '积分' }, @{ Id = 2119; Name = '评价' })
     '2005' = @(@{ Id = 2120; Name = '装修' }, @{ Id = 2121; Name = '报表' }, @{ Id = 2122; Name = '搜索索引' },
-             @{ Id = 2123; Name = '文件与日志' })
+             @{ Id = 2123; Name = '文件与日志' }, @{ Id = 2124; Name = '公告' })
 }
 
-# ---- 第 3 层：权限点（79 个），Key 为模块 Id ----
+# ---- 第 3 层：权限点（80 个），Key 为模块 Id ----
 $leaves = [ordered]@{
     '2101' = @(@('user:read', '账号列表', '/gateway/users/List'), @('user:create', '新建账号', '/gateway/users/Create'),
              @('user:update', '编辑账号与重置密码', '/gateway/users/Update,/gateway/users/ResetPassword'), @('user:status', '启停账号', '/gateway/users/UpdateStatus'))
@@ -157,6 +158,11 @@ $leaves = [ordered]@{
     # 重建索引与索引对账都在 ProductService（端点本轮新增）。
     '2122' = ,@(@('search:reindex', '重建商品索引与对账', '/gateway/products/SearchIndex/*'))
     '2123' = @(@('file:upload', '文件上传', '/gateway/files/*'), @('log:read', '日志查询', '/gateway/logs/*'))
+    # 公告：小程序首页多条公告轮播；商户账号即使有权限点也会被 Handler 拒绝
+    '2124' = @(@('notice:read', '公告列表', '/gateway/platforms/notices/List'),
+             @('notice:manage', '公告维护', '/gateway/platforms/notices/Create,/gateway/platforms/notices/Update,/gateway/platforms/notices/Delete,/gateway/platforms/notices/SetStatus'))
+    # 热搜词：按平台维护，平台运营可维护本平台；商户账号由 Handler 拒绝
+    '2125' = ,@(@('search:hotword', '热搜词维护', '/gateway/search/hot-keywords/*'))
 }
 
 # 品牌模块（2108）没有独立权限点：按 DATA_SPEC 5.21 品牌复用 product:*，

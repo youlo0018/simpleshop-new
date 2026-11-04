@@ -25,7 +25,7 @@
             <span v-show="!collapsed" class="nav__label">{{ item.meta?.title }}</span>
           </RouterLink>
 
-          <div v-show="!collapsed && isActive(item)" class="nav__sub">
+          <div v-show="!collapsed && isActive(item) && hasSubLeaves(item)" class="nav__sub">
             <RouterLink
               v-for="leaf in subLeaves(item)"
               :key="leaf.fullPath"
@@ -37,7 +37,7 @@
             </RouterLink>
           </div>
 
-          <div v-if="collapsed && hovered === item.path" class="nav__fly">
+          <div v-if="collapsed && hovered === item.path && hasSubLeaves(item)" class="nav__fly">
             <RouterLink
               v-for="leaf in subLeaves(item)"
               :key="leaf.fullPath"
@@ -142,6 +142,14 @@ function subLeaves(group: any) {
 
 function isActive(group: any) {
   return route.path.indexOf('/' + group.path) === 0;
+}
+
+// 「品牌」「分类」这类分组本身就是列表页：subLeaves 为空，但 isActive 为真。
+// 只判 isActive 的话，空的下拉容器仍会显示，它的上下 padding（4px + 8px）
+// 会在菜单项下面撑出一小块空白 —— 看起来像「下面没有子菜单却展开了一点」。
+// 折叠模式下同一个判断还决定要不要弹悬浮框：漏判时会弹出一个 160px 宽的空白面板。
+function hasSubLeaves(group: any) {
+  return subLeaves(group).length > 0;
 }
 
 // 菜单顺序：工作台在前，其余按路由声明顺序（modules.ts 里已按业务分组排好）

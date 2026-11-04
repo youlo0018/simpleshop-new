@@ -1,4 +1,3 @@
-using Collaboration.Domain.Infrastructure;
 using Microsoft.Extensions.Logging;
 using OrderService.Domain.Entities;
 using OrderService.Domain.Ports;
@@ -452,9 +451,17 @@ public sealed class OrderCreator
                 {
                     // 退的时候必须用**本次请求自己生成的** orderNo：
                     // 占用时的幂等键就是拿它拼的，用已存在那张单的号去退会顶不到本次的记录。
-                    foreach (var line in request.Lines)
+                    //
+                    // 🔴 秒杀单（InventoryPreDeducted）**跳过库存释放**：它的货在发布场次时
+                    // 就从常规池划走了，下单根本没锁过常规库存 —— 这里去 release 会：
+                    // ① 锁定量不足时抛错（无害但白记一条 error）；② 撞上同一 SKU 别的订单的
+                    // 锁定时**偷走**那份锁定，让另一个订单的货凭空变成可售（超卖）。
+                    if (!request.InventoryPreDeducted)
                     {
-                        await SafeReleaseInventoryAsync(orderNo, line.SkuId, line.Quantity);
+                        foreach (var line in request.Lines)
+                        {
+                            await SafeReleaseInventoryAsync(orderNo, line.SkuId, line.Quantity);
+                        }
                     }
 
                     if (pointsUsed > 0) await _points.UnfreezeAsync(request.CustomerId, orderNo);
@@ -522,7 +529,8 @@ public sealed class OrderCreator
     /// <remarks>
     /// 这里<b>不能</b>把异常抛给用户：订单已经落库、用户也确实该拿到这张单，
     /// 报「下单失败」只会让他以为没下成、于是再下一张——那才是真的资损。
-    /// 结清失败只留 Error 日志（带订单号），由补偿任务兜底。
+    /// 结清失败只留 Error 日志（带订单号），并保持 <c>settle_status = 0</c>，
+    /// 由 ScheduledService 的补偿任务重试（每步下游调用都按 bizNo 幂等，重放安全）。
     /// </remarks>
     private async Task SettleWithoutPaymentAsync(Order order, CancellationToken ct)
     {
@@ -534,6 +542,18 @@ public sealed class OrderCreator
                 _logger.LogError(
                     "实付 0 元的订单 {OrderNo} 下单后结清占用失败（步骤 {Step}）：{Error}，需补偿任务兜底",
                     order.OrderNo, settled.FailedStep, settled.Error);
+                return;
+            }
+
+            // 结清成功才置标志：补偿任务只扫 settle_status = 0 的单。
+            // 这里失败（返回 0 或抛错）不影响下单结果：标志仍为 0，
+            // 下一轮补偿会重放一次 —— 下游每一步都幂等，重放不会重复扣。
+            var marked = await _store.MarkSettledAsync(order.Id, ct).ConfigureAwait(false);
+            if (marked == 0)
+            {
+                _logger.LogError(
+                    "实付 0 元的订单 {OrderNo} 已结清占用，但结清标志未写入，将由补偿任务重放确认",
+                    order.OrderNo);
             }
         }
         catch (Exception ex)

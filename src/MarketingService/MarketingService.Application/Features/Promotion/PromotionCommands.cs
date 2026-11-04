@@ -18,6 +18,12 @@ public interface IPromotionActivitySpec
     /// <summary>活动名。</summary>
     string ActivityName { get; }
 
+    /// <summary>活动主图 URL（小程序活动卡片展示）。</summary>
+    string CoverImage { get; }
+
+    /// <summary>活动说明 / 规则（小程序活动页展示）。</summary>
+    string Description { get; }
+
     /// <summary>活动类型，见 <see cref="ActivityTypes"/>。</summary>
     int ActivityType { get; }
 
@@ -73,6 +79,8 @@ public interface IPromotionActivitySpec
 /// <param name="Status">状态，1 启用 / 2 停用。</param>
 /// <param name="PlatformId">平台 Id。</param>
 /// <param name="MerchantId">商户 Id，0 表示平台自营。</param>
+/// <param name="CoverImage">活动主图 URL（小程序活动卡片展示）。</param>
+/// <param name="Description">活动说明 / 规则（小程序活动页展示）。</param>
 public record CreatePromotionActivityCommand(
     string ActivityName,
     int ActivityType,
@@ -89,7 +97,9 @@ public record CreatePromotionActivityCommand(
     int SortOrder = 0,
     int Status = 1,
     long PlatformId = 0,
-    long MerchantId = 0) : IRequest<ApiResponse<long>>, IPromotionActivitySpec;
+    long MerchantId = 0,
+    string CoverImage = "",
+    string Description = "") : IRequest<ApiResponse<long>>, IPromotionActivitySpec;
 
 /// <summary>编辑营销活动。</summary>
 /// <param name="ActivityId">活动 Id。</param>
@@ -106,6 +116,8 @@ public record CreatePromotionActivityCommand(
 /// <param name="EndTime">结束时间（UTC）。</param>
 /// <param name="SortOrder">排序。</param>
 /// <param name="Status">状态。</param>
+/// <param name="CoverImage">活动主图 URL。</param>
+/// <param name="Description">活动说明 / 规则。</param>
 public record UpdatePromotionActivityCommand(
     long ActivityId,
     string ActivityName,
@@ -125,7 +137,9 @@ public record UpdatePromotionActivityCommand(
     DateTime StartTime,
     DateTime EndTime,
     int SortOrder,
-    int Status) : IRequest<ApiResponse>, IPromotionActivitySpec;
+    int Status,
+    string CoverImage = "",
+    string Description = "") : IRequest<ApiResponse>, IPromotionActivitySpec;
 
 /// <summary>活动分页（后台）。</summary>
 /// <param name="ActivityType">活动类型，0 表示全部。</param>
@@ -212,6 +226,8 @@ public readonly record struct PromotionOrderLine(long SpuId, long SkuId, decimal
 /// 「优惠」列的展示文本（满减为金额、满折为「N 折」、满赠为「赠 N 张」）。
 /// 列表列绑这个字段而不是 <c>DiscountAmount</c>：后者对满折 / 满赠活动恒为 0.00。
 /// </param>
+/// <param name="CoverImage">活动主图 URL。</param>
+/// <param name="Description">活动说明 / 规则。</param>
 public sealed record PromotionActivityDto(
     long Id, string ActivityName, int ActivityType, string TypeName,
     decimal ThresholdAmount, decimal DiscountAmount, decimal DiscountRate,
@@ -219,7 +235,9 @@ public sealed record PromotionActivityDto(
     string StartTime, string EndTime, int Status, string StatusName,
     long GiftTemplateId, int GiftQuantity,
     int SortOrder, string Targets, long PlatformId,
-    string DiscountValue = "");
+    string DiscountValue = "",
+    string CoverImage = "",
+    string Description = "");
 
 /// <summary>活动分页结果。</summary>
 /// <param name="Items">当页活动。</param>
@@ -228,6 +246,31 @@ public sealed record PromotionActivityDto(
 /// <param name="PageSize">每页条数。</param>
 public sealed record PagedPromotionResult(
     IReadOnlyList<PromotionActivityDto> Items, long Total, int Page, int PageSize);
+
+/// <summary>小程序公开活动列表（进行中且启用，排除秒杀）。</summary>
+/// <param name="PlatformId">平台 Id；C 端必须传，0 表示不限（仅供调试）。</param>
+/// <param name="MerchantId">商户 Id，0 表示不限（店铺页传本店 Id）。</param>
+/// <param name="Limit">最多返回条数，1-50。</param>
+/// <param name="ActivityId">活动 Id；&gt;0 时只返回这一条（P11 深链用）。</param>
+public record QueryPublicActivitiesCommand(
+    long PlatformId = 0, long MerchantId = 0, int Limit = 20, long ActivityId = 0)
+    : IRequest<ApiResponse<List<PublicActivityDto>>>;
+
+/// <summary>小程序活动卡片 / 活动商品页头部。</summary>
+/// <param name="ActivityId">活动 Id，字符串下发。</param>
+/// <param name="ActivityName">活动名。</param>
+/// <param name="ActivityType">活动类型。</param>
+/// <param name="TypeName">类型中文名。</param>
+/// <param name="CoverImage">活动主图 URL。</param>
+/// <param name="Description">活动说明 / 规则。</param>
+/// <param name="StartTime">开始时间（UTC ISO）。</param>
+/// <param name="EndTime">结束时间（UTC ISO）。</param>
+/// <param name="DiscountValue">优惠展示文案（如「满100减20」）。</param>
+/// <param name="SortOrder">排序值。</param>
+public sealed record PublicActivityDto(
+    string ActivityId, string ActivityName, int ActivityType, string TypeName,
+    string CoverImage, string Description,
+    string StartTime, string EndTime, string DiscountValue, int SortOrder);
 
 /// <summary>到手价结果。</summary>
 /// <param name="OriginalTotal">原价合计。</param>
@@ -285,6 +328,7 @@ public static class PromotionValidators
         services.AddScoped<IValidator<SetPromotionStatusCommand>, SetPromotionStatusValidator>();
         services.AddScoped<IValidator<DeletePromotionActivityCommand>, DeletePromotionValidator>();
         services.AddScoped<IValidator<GetPromotionActivityCommand>, GetPromotionValidator>();
+        services.AddScoped<IValidator<QueryPublicActivitiesCommand>, QueryPublicActivitiesValidator>();
         services.AddScoped<IValidator<CalculateFinalPriceCommand>, FinalPriceValidator>();
         services.AddScoped<IValidator<QuoteOrderDiscountCommand>, QuoteOrderDiscountValidator>();
         services.AddScoped<IValidator<CalculateFinalPriceBatchCommand>, FinalPriceBatchValidator>();
@@ -308,6 +352,8 @@ public static class PromotionValidators
             RuleFor(x => x.ActivityName).NotEmpty().WithMessage("活动名必填");
             RuleFor(x => x.ActivityName).MinimumLength(2).WithMessage("活动名至少 2 个字符");
             RuleFor(x => x.ActivityName).MaximumLength(128).WithMessage("活动名不超过 128 个字符");
+            RuleFor(x => x.CoverImage).MaximumLength(512).WithMessage("活动主图地址过长");
+            RuleFor(x => x.Description).MaximumLength(1000).WithMessage("活动说明最多 1000 个字符");
 
             // 下面每条 RuleFor 都必须写成 `x => x.某个属性` 的**具体属性表达式**。
             //
@@ -393,6 +439,19 @@ public static class PromotionValidators
         {
             RuleFor(x => x.ActivityId).GreaterThan(0).WithMessage("活动 Id 必须为正数");
             Include(new PromotionActivityRules<UpdatePromotionActivityCommand>());
+        }
+    }
+
+    /// <summary>小程序公开活动列表校验。</summary>
+    private sealed class QueryPublicActivitiesValidator : AbstractValidator<QueryPublicActivitiesCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryPublicActivitiesValidator()
+        {
+            RuleFor(x => x.PlatformId).GreaterThanOrEqualTo(0).WithMessage("平台信息不正确");
+            RuleFor(x => x.MerchantId).GreaterThanOrEqualTo(0).WithMessage("商户信息不正确");
+            RuleFor(x => x.Limit).InclusiveBetween(1, 50).WithMessage("返回条数必须在 1 ~ 50 之间");
+            RuleFor(x => x.ActivityId).GreaterThanOrEqualTo(0).WithMessage("活动信息不正确");
         }
     }
 

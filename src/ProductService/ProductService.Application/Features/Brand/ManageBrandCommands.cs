@@ -31,7 +31,8 @@ public record QueryBrandsCommand(
     int Page = 1,
     int PageSize = 20,
     string Keyword = "",
-    bool IncludeDisabled = false) : IRequest<ApiResponse<List<BrandListItem>>>;
+    bool IncludeDisabled = false,
+    long PlatformId = 0) : IRequest<ApiResponse<List<BrandListItem>>>;
 
 /// <summary>品牌列表项。</summary>
 public record BrandListItem(
@@ -47,6 +48,19 @@ public static class BrandValidators
         services.AddScoped<IValidator<CreateBrandCommand>, CreateBrandValidator>();
         services.AddScoped<IValidator<UpdateBrandCommand>, UpdateBrandValidator>();
         services.AddScoped<IValidator<DeleteBrandCommand>, DeleteBrandValidator>();
+        services.AddScoped<IValidator<QueryBrandsCommand>, QueryBrandsValidator>();
+    }
+
+    /// <summary>品牌列表校验。</summary>
+    private sealed class QueryBrandsValidator : AbstractValidator<QueryBrandsCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryBrandsValidator()
+        {
+            RuleFor(x => x.Page).GreaterThanOrEqualTo(1).WithMessage("页码不正确");
+            RuleFor(x => x.PageSize).InclusiveBetween(1, 100).WithMessage("每页条数不正确");
+            RuleFor(x => x.PlatformId).GreaterThanOrEqualTo(0).WithMessage("平台信息不正确");
+        }
     }
 
     /// <summary>新建品牌校验。</summary>

@@ -232,6 +232,12 @@ export const adminRoutes: RouteRecordRaw[] = [
         component: () => import('@/views/IndexReconcileView.vue'),
         meta: { title: '索引对账', perm: 'search:reindex' },
       },
+      {
+        path: 'synonyms',
+        name: 'search-synonym-config',
+        component: () => import('@/views/SearchSynonymsView.vue'),
+        meta: { title: '商品搜索同义词', perm: 'search:reindex' },
+      },
     ],
   },
   // ---- 交易 ----
@@ -359,6 +365,24 @@ export const adminRoutes: RouteRecordRaw[] = [
     path: 'files',
     meta: { title: '文件', icon: 'FolderOpened', perm: 'file:upload' },
     children: [listRoute('', 'file-list', '文件管理', 'file:upload', 'files')],
+  },
+  {
+    path: 'notices',
+    meta: { title: '公告', icon: 'Bell', perm: 'notice:read' },
+    children: [
+      listRoute('', 'notice-list', '公告管理', 'notice:read', 'notices'),
+      formRoute('create', 'notice-create', '新建公告', 'notice:manage', 'notice'),
+      formRoute('edit/:id', 'notice-edit', '编辑公告', 'notice:manage', 'notice'),
+    ],
+  },
+  {
+    path: 'search-hotwords',
+    meta: { title: '搜索热搜词', icon: 'Search', perm: 'search:hotword' },
+    children: [
+      listRoute('', 'hot-keyword-list', '热搜词管理', 'search:hotword', 'hotKeywords'),
+      formRoute('create', 'hot-keyword-create', '新建热搜词', 'search:hotword', 'hotKeyword'),
+      formRoute('edit/:id', 'hot-keyword-edit', '编辑热搜词', 'search:hotword', 'hotKeyword'),
+    ],
   },
   {
     path: 'logs',

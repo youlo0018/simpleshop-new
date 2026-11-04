@@ -23,6 +23,15 @@ CREATE TABLE IF NOT EXISTS platform (
     logo             varchar(512)  NOT NULL DEFAULT '',
     mall_name        varchar(128)  NOT NULL DEFAULT '',
     notice           varchar(500)  NOT NULL DEFAULT '',
+    -- 小程序公开信息（P01 首页 / P31 平台切换 / 用户协议等独立页）
+    share_title      varchar(128)  NOT NULL DEFAULT '',
+    share_image      varchar(512)  NOT NULL DEFAULT '',
+    service_wechat   varchar(64)   NOT NULL DEFAULT '',
+    service_phone    varchar(20)   NOT NULL DEFAULT '',
+    user_agreement   text          NOT NULL DEFAULT '',
+    privacy_policy   text          NOT NULL DEFAULT '',
+    icp_no           varchar(64)   NOT NULL DEFAULT '',
+    mall_intro       varchar(1000) NOT NULL DEFAULT '',
     -- 三档主题色（用户明确要求的三档：主题色 / TabBar 选中色 / 页面背景色）
     primary_color    varchar(16)   NOT NULL DEFAULT '#0071e3',
     tab_color        varchar(16)   NOT NULL DEFAULT '#0071e3',
@@ -34,6 +43,17 @@ CREATE TABLE IF NOT EXISTS platform (
     remark          varchar(512)  NOT NULL DEFAULT '',
     CONSTRAINT pk_platform PRIMARY KEY (id)
 );
+
+-- 存量库补列：CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，新列必须用 ALTER 补齐，
+-- 且必须排在索引之前（CODING_STANDARD §6 第 62 条）。
+ALTER TABLE platform ADD COLUMN IF NOT EXISTS share_title    varchar(128)  NOT NULL DEFAULT '';
+ALTER TABLE platform ADD COLUMN IF NOT EXISTS share_image    varchar(512)  NOT NULL DEFAULT '';
+ALTER TABLE platform ADD COLUMN IF NOT EXISTS service_wechat varchar(64)   NOT NULL DEFAULT '';
+ALTER TABLE platform ADD COLUMN IF NOT EXISTS service_phone  varchar(20)   NOT NULL DEFAULT '';
+ALTER TABLE platform ADD COLUMN IF NOT EXISTS user_agreement text          NOT NULL DEFAULT '';
+ALTER TABLE platform ADD COLUMN IF NOT EXISTS privacy_policy text          NOT NULL DEFAULT '';
+ALTER TABLE platform ADD COLUMN IF NOT EXISTS icp_no         varchar(64)   NOT NULL DEFAULT '';
+ALTER TABLE platform ADD COLUMN IF NOT EXISTS mall_intro     varchar(1000) NOT NULL DEFAULT '';
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_platform_name
     ON platform (platform_name) WHERE is_deleted = false;
@@ -60,6 +80,9 @@ CREATE TABLE IF NOT EXISTS merchant (
     contact_phone    varchar(20)   NOT NULL DEFAULT '',
     logo             varchar(512)  NOT NULL DEFAULT '',
     description      varchar(1000) NOT NULL DEFAULT '',
+    -- 小程序商品详情 / 店铺页展示（商户级别，不按商品单独配）
+    service_guarantee varchar(1000) NOT NULL DEFAULT '',
+    delivery_note     varchar(1000) NOT NULL DEFAULT '',
     -- 新建默认停用：必须审核通过后才能运营（规格 5.2）
     status           int           NOT NULL DEFAULT 2,
     -- 审核状态：10 待审核 / 20 已通过 / 90 已拒绝。新建固定 10
@@ -75,9 +98,38 @@ CREATE TABLE IF NOT EXISTS merchant (
     CONSTRAINT pk_merchant PRIMARY KEY (id)
 );
 
+ALTER TABLE merchant ADD COLUMN IF NOT EXISTS service_guarantee varchar(1000) NOT NULL DEFAULT '';
+ALTER TABLE merchant ADD COLUMN IF NOT EXISTS delivery_note     varchar(1000) NOT NULL DEFAULT '';
+
 -- 同平台内商户名唯一（不同平台可以有同名店铺）
 CREATE UNIQUE INDEX IF NOT EXISTS uk_merchant_platform_name
     ON merchant (platform_id, merchant_name) WHERE is_deleted = false;
+
+-- ===== 平台公告（小程序首页多条公告轮播） =====
+CREATE TABLE IF NOT EXISTS platform_notice (
+    id               bigint        NOT NULL,
+    created_at       timestamp     NOT NULL,
+    updated_at       timestamp     NULL,
+    is_deleted       boolean       NOT NULL DEFAULT false,
+    deleted_at       timestamp     NULL,
+    created_by_id    bigint        NOT NULL DEFAULT 0,
+    created_by_name  varchar(64)   NOT NULL DEFAULT '',
+    operation_id     bigint        NOT NULL DEFAULT 0,
+    operation_name   varchar(64)   NOT NULL DEFAULT '',
+    platform_id      bigint        NOT NULL DEFAULT 0,
+    merchant_id      bigint        NOT NULL DEFAULT 0,
+    title            varchar(128)  NOT NULL DEFAULT '',
+    content          varchar(1000) NOT NULL DEFAULT '',
+    link_type        varchar(32)   NOT NULL DEFAULT 'none',
+    link_param       varchar(256)  NOT NULL DEFAULT '',
+    sort_order       int           NOT NULL DEFAULT 0,
+    status           int           NOT NULL DEFAULT 1,
+    CONSTRAINT pk_platform_notice PRIMARY KEY (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_notice_public
+    ON platform_notice (platform_id, status, sort_order)
+    WHERE is_deleted = false;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_merchant_no
     ON merchant (merchant_no) WHERE is_deleted = false;

@@ -33,7 +33,7 @@ function Q([string]$v) {
 # platform 下的其它权限点（比如平台导出）就默认拿不到，而它们本意是给运营的。
 $roles = @(
     @{ Name = '平台管理员';   Code = 'platform-admin';     Scopes = 1; DataScope = 2; Prefix = '' },
-    @{ Name = '平台运营';     Code = 'platform-operator';  Scopes = 1; DataScope = 2; Prefix = 'platform|merchant|category|product|inventory|order|refund|marketing|coupon|seckill|point|evaluate|design|report|dashboard|region|permission|user|customer'
+    @{ Name = '平台运营';     Code = 'platform-operator';  Scopes = 1; DataScope = 2; Prefix = 'platform|merchant|category|product|inventory|order|refund|marketing|coupon|seckill|point|evaluate|design|report|dashboard|region|permission|user|customer|notice|search'
        Exclude = 'platform:create' },
     @{ Name = '平台财务';     Code = 'platform-finance';   Scopes = 1; DataScope = 2; Prefix = 'order|payment|refund|report|dashboard' },
     @{ Name = '商户管理员';   Code = 'merchant-admin';     Scopes = 2; DataScope = 2; Prefix = '' },

@@ -1,3 +1,4 @@
+using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.MediatR;
 using FluentValidation;
 using MarketingService.Application.Features.Coupon;
@@ -23,6 +24,8 @@ public static class ApiServiceCollectionExtensions
     public static IServiceCollection AddAppServices(
         this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInternalTokenPropagation();
+
         var appAssembly = typeof(ClaimCouponCommand).Assembly;
 
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(appAssembly));
@@ -34,6 +37,7 @@ public static class ApiServiceCollectionExtensions
         AdminCouponValidators.AddAdminCouponValidators(services);
         CouponTemplateOptionValidators.AddCouponTemplateOptionValidators(services);
         PromotionValidators.AddPromotionValidators(services);
+        MarketingProductTargetValidators.AddMarketingProductTargetValidators(services);
         ActivityRecordCleanupValidators.AddActivityRecordCleanupValidators(services);
         SeckillValidators.AddSeckillValidators(services);
         SeckillSessionOptionValidators.AddSeckillSessionOptionValidators(services);
@@ -44,6 +48,7 @@ public static class ApiServiceCollectionExtensions
         AddProductPort(services, configuration);
         AddOrderPort(services, configuration);
         AddOrderAmountPort(services, configuration);
+        AddViewCountPort(services, configuration);
 
         // 库存回补器：手动中止与「到点自动结束」共用同一段回补代码。
         // 注册成 Scoped 而不是 Transient：它持有仓储与 HttpClient，
@@ -70,7 +75,7 @@ public static class ApiServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(10);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 
     /// <summary>注册商品端口：加秒杀商品时要取 SKU 快照与售价。</summary>
@@ -89,7 +94,7 @@ public static class ApiServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(10);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 
     /// <summary>注册订单端口：抢购要真的调订单服务建单。</summary>
@@ -110,7 +115,7 @@ public static class ApiServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(15);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 
     /// <summary>注册秒杀 GMV 端口：报表要向订单服务问成交额。</summary>
@@ -131,6 +136,27 @@ public static class ApiServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(15);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
+    }
+
+    /// <summary>注册场次 PV 端口：秒杀报表要向日志服务取埋点计数。</summary>
+    /// <param name="services">服务集合。</param>
+    /// <param name="configuration">应用配置。</param>
+    private static void AddViewCountPort(IServiceCollection services, IConfiguration configuration)
+    {
+        var url = configuration["Services:LogServiceBaseUrl"];
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            throw new InvalidOperationException(
+                "缺少配置 Services:LogServiceBaseUrl。秒杀报表的场次 PV 由日志服务聚合，没有它这一项指标算不出来。");
+        }
+
+        // 超时给 10 秒：PV 是只读聚合，不参与交易链路；
+        // 日志服务临时不可用时端口会降级为 0，不阻塞报表太久。
+        services.AddHttpClient<IViewCountPort, HttpViewCountPort>(client =>
+        {
+            client.BaseAddress = new Uri(url!.TrimEnd('/') + "/");
+            client.Timeout = TimeSpan.FromSeconds(10);
+        }).AddHttpMessageHandler<InternalTokenHandler>();
     }
 }

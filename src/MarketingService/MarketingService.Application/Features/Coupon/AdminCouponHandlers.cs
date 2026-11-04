@@ -589,7 +589,15 @@ public sealed class QueryCouponRecordsHandler
             a.Status, CouponStatuses.NameOf(a.Status),
             a.ReceiveAt.ToString("yyyy-MM-dd HH:mm:ss"),
             a.ExpireAt.ToString("yyyy-MM-dd HH:mm:ss"),
-            a.ConsumeAt?.ToString("yyyy-MM-dd HH:mm:ss"))).ToList();
+            a.ConsumeAt?.ToString("yyyy-MM-dd HH:mm:ss"),
+            a.TargetType,
+            a.TargetType switch
+            {
+                TargetTypes.All => "全场通用",
+                TargetTypes.BySpu => "指定商品可用",
+                TargetTypes.BySku => "指定规格可用",
+                _ => "适用范围以活动规则为准"
+            })).ToList();
 
         return ApiResults.Ok(new PagedResult<CouponRecordItem>(items, page.Total, request.Page, request.PageSize));
     }
@@ -641,7 +649,15 @@ public sealed class QueryMyCouponsHandler
             a.Status, CouponStatuses.NameOf(a.Status),
             a.ReceiveAt.ToString("yyyy-MM-dd HH:mm:ss"),
             a.ExpireAt.ToString("yyyy-MM-dd HH:mm:ss"),
-            a.ConsumeAt?.ToString("yyyy-MM-dd HH:mm:ss"))).ToList();
+            a.ConsumeAt?.ToString("yyyy-MM-dd HH:mm:ss"),
+            a.TargetType,
+            a.TargetType switch
+            {
+                TargetTypes.All => "全场通用",
+                TargetTypes.BySpu => "指定商品可用",
+                TargetTypes.BySku => "指定规格可用",
+                _ => "适用范围以活动规则为准"
+            })).ToList();
 
         return ApiResults.Ok(new PagedResult<CouponRecordItem>(
             items, page.Total, request.Page, request.PageSize));

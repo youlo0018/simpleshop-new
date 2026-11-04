@@ -34,6 +34,15 @@ public sealed class TenantContext
     /// <summary>客户唯一编码；后台与游客为空字符串。</summary>
     public string CustomerNo { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 客户会话 Id（令牌 jti）；后台与游客为空字符串。
+    /// </summary>
+    /// <remarks>
+    /// 登出与刷新要用它定位「这一台设备的会话键」—— 同一客户可以在多台设备登录，
+    /// 只有拿到当前请求的会话 Id 才能只删自己那一把键。
+    /// </remarks>
+    public string SessionId { get; set; } = string.Empty;
+
     /// <summary>当前权限点集合，由令牌解析。权限只认显式绑定，无绑定即无权限（fail-closed）。</summary>
     public IReadOnlyList<string> Permissions { get; set; } = Array.Empty<string>();
 

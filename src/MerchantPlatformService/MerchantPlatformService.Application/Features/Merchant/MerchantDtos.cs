@@ -10,6 +10,7 @@ namespace MerchantPlatformService.Application.Features.Merchant;
 /// <param name="ContactPhone">联系电话。</param>
 /// <param name="Logo">店铺 Logo。</param>
 /// <param name="Description">店铺简介。</param>
+/// <param name="Remark">备注。**必须回给前端**：编辑页的数据源是这份列表 DTO，少了它一保存就会把备注清空。</param>
 /// <param name="Status">启停状态。</param>
 /// <param name="StatusName">启停状态中文名。</param>
 /// <param name="AuditStatus">审核状态。</param>
@@ -22,6 +23,8 @@ namespace MerchantPlatformService.Application.Features.Merchant;
 /// <param name="CreatedByName">创建人。</param>
 /// <param name="UpdatedAt">最后更新时间。</param>
 /// <param name="OperationName">最后操作人。</param>
+/// <param name="ServiceGuarantee">服务保障文案，商品详情页展示。</param>
+/// <param name="DeliveryNote">配送说明文案，商品详情页展示。</param>
 public sealed record MerchantListDto(
     long Id,
     string MerchantName,
@@ -46,7 +49,9 @@ public sealed record MerchantListDto(
     string CreatedAt,
     string CreatedByName,
     string UpdatedAt,
-    string OperationName);
+    string OperationName,
+    string ServiceGuarantee,
+    string DeliveryNote);
 
 /// <summary>商户分页结果。</summary>
 /// <param name="Items">当前页数据。</param>
@@ -56,10 +61,6 @@ public sealed record MerchantListDto(
 public sealed record PagedMerchantDtos(
     IReadOnlyList<MerchantListDto> Items, long Total, int Page, int PageSize);
 
-/// <summary>商户下拉项。</summary>
-/// <param name="Id">商户 Id。</param>
-/// <param name="Name">商户名称，<b>前端下拉直接显示它</b>。</param>
-/// <param name="PlatformId">所属平台 Id。</param>
 /// <summary>商户下拉项。</summary>
 /// <param name="Id">商户 Id，<b>字符串下发</b>（4.6）。</param>
 /// <param name="Name">店铺名。</param>

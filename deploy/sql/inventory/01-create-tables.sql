@@ -83,13 +83,19 @@ CREATE TABLE IF NOT EXISTS pending_stock_release (
     status        int           NOT NULL DEFAULT 0,
     retry_count   int           NOT NULL DEFAULT 0,
     last_error    varchar(512)  NOT NULL DEFAULT '',
-    next_retry_at timestamp     NOT NULL DEFAULT now(),
+    -- 🔴 必须 now() AT TIME ZONE 'UTC'：容器 PGTZ=Asia/Shanghai，裸 now() 会写本地时间，
+    -- 而补偿任务按 UTC 比较「到点没有」—— 默认值一旦被用到，重试会晚 8 小时。
+    next_retry_at timestamp     NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
     platform_id   bigint        NOT NULL DEFAULT 0,
     merchant_id   bigint        NOT NULL DEFAULT 0,
     CONSTRAINT pk_pending_stock_release PRIMARY KEY (id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_stock_release (status, next_retry_at);
+
+-- 老库把默认值改过来（幂等可重跑）：裸 now() 写的是容器本地时间，与 UTC 比较会差 8 小时
+ALTER TABLE pending_stock_release
+    ALTER COLUMN next_retry_at SET DEFAULT (now() AT TIME ZONE 'UTC');
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO simpleshop_app;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO simpleshop_app;

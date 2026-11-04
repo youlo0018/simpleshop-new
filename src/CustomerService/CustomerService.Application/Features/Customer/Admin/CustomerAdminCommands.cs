@@ -8,8 +8,9 @@ namespace CustomerService.Application.Features.Customer.Admin;
 /// <param name="Keyword">登录名 / 昵称 / 手机号模糊匹配。</param>
 /// <param name="Page">页码，从 1 起。</param>
 /// <param name="PageSize">每页条数。</param>
+/// <param name="PlatformId">平台过滤，0 表示不限（仅超管可跨平台看；平台账号由服务端强制锁定本平台）。</param>
 public record QueryAdminCustomersCommand(
-    int Status = 0, string Keyword = "", int Page = 1, int PageSize = 20)
+    int Status = 0, string Keyword = "", int Page = 1, int PageSize = 20, long PlatformId = 0)
     : IRequest<ApiResponse<PagedResult<AdminCustomerDto>>>;
 
 /// <summary>后台客户详情。</summary>
@@ -36,6 +37,7 @@ public record ChangeCustomerStatusCommand(long CustomerId, int Status)
 /// <param name="StatusName">状态中文名。</param>
 /// <param name="LastLoginAt">最后登录时间，未登录为 null。</param>
 /// <param name="CreatedAt">注册时间 UTC。</param>
+/// <param name="PlatformName">所属平台名称（列表冗余下发，界面不显示裸 Id）；名字取不到时为空串。</param>
 /// <remarks>
 /// 后台**不脱敏手机号**：客服接到客户电话时需要按号码找人，脱敏了就等于没法用。
 /// 这与「界面不出现原始数据」不冲突 —— 手机号本身是业务字段，
@@ -44,4 +46,4 @@ public record ChangeCustomerStatusCommand(long CustomerId, int Status)
 public sealed record AdminCustomerDto(
     long CustomerId, string CustomerNo, string CustomerName, string NickName, string Phone, string Avatar,
     int Gender, string GenderName, int Status, string StatusName,
-    string? LastLoginAt, string CreatedAt);
+    string? LastLoginAt, string CreatedAt, string PlatformName);

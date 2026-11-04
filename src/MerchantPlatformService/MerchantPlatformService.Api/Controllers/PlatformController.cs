@@ -66,4 +66,21 @@ public sealed class PlatformController : ControllerBase
         var result = await _mediator.Send(new QueryPlatformOptionsQuery(), ct);
         return Ok(result);
     }
+
+    /// <summary>小程序平台列表（运行期切换平台，无需登录）。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>启用平台列表，含编码、商城名、Logo 与三档主题色。</returns>
+    /// <remarks>只返回启用平台：停用平台不出现在切换列表里，与「停用平台禁止登录」一致。</remarks>
+    [HttpGet("Public")]
+    public Task<ApiResponse<List<PublicPlatformDto>>> Public(CancellationToken ct)
+        => _mediator.Send(new QueryPublicPlatformsQuery(), ct);
+
+    /// <summary>小程序按平台编码读取公开平台信息（无需登录）。</summary>
+    /// <param name="platformCode">平台编码，6 位字母，忽略大小写。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>公开平台信息；不存在或已停用返回 404。</returns>
+    [HttpGet("PublicDetail")]
+    public Task<ApiResponse<PublicPlatformDetailDto>> PublicDetail(
+        [FromQuery] string? platformCode, CancellationToken ct)
+        => _mediator.Send(new QueryPublicPlatformDetailQuery(platformCode ?? string.Empty), ct);
 }

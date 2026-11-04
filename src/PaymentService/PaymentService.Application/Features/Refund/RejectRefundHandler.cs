@@ -1,4 +1,5 @@
 using Collaboration.Domain.Common;
+using System.Text.Json;
 using Collaboration.Domain.Context;
 using MediatR;
 using PaymentService.Application.Services;
@@ -84,21 +85,9 @@ public sealed class QueryRefundsHandler : IRequestHandler<QueryRefundsCommand, A
         var items = new List<RefundDto>(page.Items.Count);
         foreach (var refund in page.Items)
         {
-            var details = await _refunds.ListItemsAsync(refund.Id, ct);
-            items.Add(new RefundDto(
-                refund.Id, refund.RefundNo, refund.OrderId, refund.OrderNo, refund.Amount,
-                refund.RefundType, RefundTypes.NameOf(refund.RefundType),
-                refund.Status, RefundStatuses.NameOf(refund.Status),
-                refund.Reason, refund.RejectReason, refund.ApproverName,
-                RefundAssembler.FormatTime(refund.CreatedAt),
-                details.Select(a => new RefundItemDto(
-                    a.OrderItemId, a.ProductName, a.SkuSpecText, a.Amount)).ToList(),
-                refund.PlatformId > 0
-                    ? names.Platforms.GetValueOrDefault(refund.PlatformId, refund.PlatformId.ToString())
-                    : "平台自营",
-                refund.MerchantId > 0
-                    ? names.Merchants.GetValueOrDefault(refund.MerchantId, refund.MerchantId.ToString())
-                    : "平台自营"));
+            items.Add(await RefundAssembler
+                .BuildAsync(_refunds, names, refund, ct)
+                .ConfigureAwait(false));
         }
 
         return ApiResults.Ok(new PagedRefundDtos(items, page.Total, page.Page, page.PageSize));
@@ -108,6 +97,51 @@ public sealed class QueryRefundsHandler : IRequestHandler<QueryRefundsCommand, A
 /// <summary>退款模块的展示装配。</summary>
 public static class RefundAssembler
 {
+    /// <summary>把退款单组装成对外 DTO（含明细、平台/商户名、凭证图与审批时间）。</summary>
+    /// <param name="refunds">退款仓储。</param>
+    /// <param name="names">平台 / 商户名称。</param>
+    /// <param name="refund">退款单实体。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>退款单视图。只读。</returns>
+    public static async Task<RefundDto> BuildAsync(
+        IRefundRepository refunds, PlatformNames names, RefundOrder refund, CancellationToken ct)
+    {
+        var details = await refunds.ListItemsAsync(refund.Id, ct).ConfigureAwait(false);
+
+        return new RefundDto(
+            refund.Id, refund.RefundNo, refund.OrderId, refund.OrderNo, refund.Amount,
+            refund.RefundType, RefundTypes.NameOf(refund.RefundType),
+            refund.Status, RefundStatuses.NameOf(refund.Status),
+            refund.Reason, refund.RejectReason, refund.ApproverName,
+            FormatTime(refund.CreatedAt),
+            details.Select(a => new RefundItemDto(
+                a.OrderItemId, a.ProductName, a.SkuSpecText, a.Amount)).ToList(),
+            refund.PlatformId > 0
+                ? names.Platforms.GetValueOrDefault(refund.PlatformId, "平台自营")
+                : "平台自营",
+            refund.MerchantId > 0
+                ? names.Merchants.GetValueOrDefault(refund.MerchantId, "店铺")
+                : "平台自营",
+            ParseImages(refund.Images),
+            refund.ApprovedAt is null ? string.Empty : FormatTime(refund.ApprovedAt.Value));
+    }
+
+    /// <summary>把凭证图片 JSON 解析成数组。</summary>
+    /// <param name="json">图片 JSON 文本。</param>
+    /// <returns>URL 数组；空或非法 JSON 返回空数组。</returns>
+    public static IReadOnlyList<string> ParseImages(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
     /// <summary>把 UTC 时间格式化成字符串（**仍是 UTC**）。</summary>
     /// <param name="utc">UTC 时间。</param>
     /// <returns>UTC 展示字符串。</returns>

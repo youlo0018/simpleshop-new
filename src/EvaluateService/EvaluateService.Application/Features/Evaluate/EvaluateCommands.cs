@@ -16,7 +16,21 @@ namespace EvaluateService.Application.Features.Evaluate;
 /// <param name="SkuId">按 SKU 过滤，0 表示不过滤。</param>
 /// <param name="Page">页码，从 1 起。</param>
 /// <param name="PageSize">每页条数。</param>
-public record QuerySpuEvaluatesCommand(long SpuId, long SkuId = 0, int Page = 1, int PageSize = 10)
+/// <param name="HasImage">true 只返回带图评价。</param>
+/// <param name="MinStar">最低星级，0 表示不限。</param>
+/// <param name="MaxStar">最高星级，0 表示不限。</param>
+public record QuerySpuEvaluatesCommand(
+    long SpuId, long SkuId = 0, int Page = 1, int PageSize = 10,
+    bool HasImage = false, int MinStar = 0, int MaxStar = 0)
+    : IRequest<ApiResponse<EvaluatePageResult>>;
+
+/// <summary>查某商户的公开评价列表（店铺页 P35）。</summary>
+/// <param name="MerchantId">商户 Id。</param>
+/// <param name="PlatformId">平台 Id，0 表示不限。</param>
+/// <param name="Page">页码。</param>
+/// <param name="PageSize">每页条数。</param>
+public record QueryMerchantEvaluatesCommand(
+    long MerchantId, long PlatformId = 0, int Page = 1, int PageSize = 10)
     : IRequest<ApiResponse<EvaluatePageResult>>;
 
 // ==================== C 端：我的评价 ====================
@@ -83,6 +97,7 @@ public record AppendEvaluateCommand(
 /// <param name="MerchantId">商户 Id，0 表示不限。</param>
 /// <param name="StarScore">星级，0 表示不限。</param>
 /// <param name="OnlyHidden">只看已隐藏。</param>
+/// <param name="Keyword">后台搜索框关键词：商品名 / 评价内容模糊匹配，空表示不限。</param>
 /// <param name="Page">页码，从 1 起。</param>
 /// <param name="PageSize">每页条数。</param>
 public record QueryAdminEvaluatesCommand(

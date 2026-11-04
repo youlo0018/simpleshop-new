@@ -1,3 +1,4 @@
+using System.Text;
 using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.Repository;
 using FreeSql;
@@ -94,6 +95,29 @@ public sealed class MerchantRepository : CrudRepository<Merchant>, IMerchantRepo
     }
 
     /// <inheritdoc />
+    public async Task<List<(long Id, string Name)>> ListNamesByIdsAsync(
+        IReadOnlyList<long> merchantIds, CancellationToken ct = default)
+    {
+        if (merchantIds.Count == 0) return [];
+
+        // 内部上下文（Access = Internal）不过租户过滤，这里显式去重 + 限流（一次最多 200 个）
+        var ids = merchantIds.Where(a => a > 0).Distinct().Take(200).ToArray();
+        if (ids.Length == 0) return [];
+
+        var rows = await Db.Select<Merchant>()
+            .Where(a => ids.Contains(a.Id))
+            .ToListAsync(a => new NameRow(a.Id, a.MerchantName), ct)
+            .ConfigureAwait(false);
+
+        return rows.Select(a => (a.Id, a.Name)).ToList();
+    }
+
+    /// <summary>名称投影行（FreeSql 投影需要具名类型，元组映射不可靠）。</summary>
+    /// <param name="Id">Id。</param>
+    /// <param name="Name">展示名。</param>
+    private sealed record NameRow(long Id, string Name);
+
+    /// <inheritdoc />
     public async Task<PagedMerchants> PageAsync(MerchantFilter filter, CancellationToken ct = default)
     {
         var query = Db.Select<Merchant>();
@@ -175,18 +199,43 @@ public sealed class MerchantRepository : CrudRepository<Merchant>, IMerchantRepo
     {
         if (ratings.Count == 0) return 0;
 
-        var updated = 0;
+        // 🔴 单条 UPDATE ... FROM (VALUES ...) 批量更新，不再逐个商户发 UPDATE。
+        //
+        // 评分同步一次要覆盖全平台商户，逐个 UPDATE 意味着 N 次往返；
+        // 商户多起来后这条链路会从「毫秒级」退化成「秒级」，而调用方是内部同步任务，
+        // 超时后还会重试，重试又跑一遍全部 UPDATE。
+        //
+        // 所有行共用同一个 updated_at：同一批同步本来就是一个时刻的结果，
+        // 逐行取 now() 会让同批数据的更新时间不一致，排查时看不出它们是同一次同步。
+        var updatedAt = DateTime.UtcNow;
+        var sql = new StringBuilder("UPDATE merchant AS m SET rating = v.rating, updated_at = v.updated_at ")
+            .Append("FROM (VALUES ");
+        var parameters = new Dictionary<string, object>(ratings.Count * 2 + 1)
+        {
+            // 全批共用一个时间戳：同一批同步本来就是一个时刻的结果
+            ["updated_at"] = updatedAt
+        };
+
+        var index = 0;
         foreach (var (merchantId, rating) in ratings)
         {
-            // 条件更新带上「当前值」，避免与后台的编辑操作互相覆盖
-            var affected = await Db.Update<Merchant>()
-                .Where(a => a.Id == merchantId)
-                .Set(a => new Merchant { Rating = rating, UpdatedAt = DateTime.UtcNow })
-                .ExecuteAffrowsAsync(ct);
+            if (index > 0) sql.Append(", ");
 
-            updated += affected;
+            // 参数名带行号，占位符与 Dictionary 的 key 一一对应（不含 @）
+            // 🔴 参数名必须全小写：FreeSql 解析占位符时会做大小写规范化，
+            // 写成 @updatedAt 会被当成「@updated」后面跟着列名 At，报 column "updatedat" does not exist。
+            sql.Append($"(@id{index}, @rating{index}, @updated_at)");
+            parameters[$"id{index}"] = merchantId;
+            parameters[$"rating{index}"] = rating;
+            index++;
         }
 
-        return updated;
+        // 软删条件必须显式补上：原生 SQL 不经过 FreeSql 的全局过滤器，
+        // 漏掉会把已删除商户的评分也一起改掉（与逐行版本的行为不一致）。
+        sql.Append(") AS v(id, rating, updated_at) WHERE m.id = v.id AND m.is_deleted = false");
+
+        return await Db.Ado
+            .ExecuteNonQueryAsync(sql.ToString(), parameters, ct)
+            .ConfigureAwait(false);
     }
 }

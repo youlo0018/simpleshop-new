@@ -14,6 +14,7 @@ const string OrphanInventoryClient = "orphan_inventory";
 const string OrphanOrderClient = "orphan_order";
 const string ActivityCleanupMarketingClient = "activity_cleanup_marketing";
 const string ActivityCleanupOrderClient = "activity_cleanup_order";
+const string PointCompensateClient = "point_compensate";
 
 // ---------- 与其它服务同一条启动链：先从 AgileConfig 取配置，再连 Redis ----------
 // 定时任务没有数据库，所以显式豁免 ConnectionStrings:Default。
@@ -28,7 +29,9 @@ var loaded = await ServiceBootstrap.LoadConfigurationAsync(
         "Services:PointServiceBaseUrl",
         "Services:EvaluateServiceBaseUrl",
         "Services:InventoryServiceBaseUrl",
-        "Services:MarketingServiceBaseUrl"
+        "Services:MarketingServiceBaseUrl",
+        // 退款对账 / 支付单对账都要打支付服务
+        "Services:PaymentServiceBaseUrl"
     ],
     exemptBaseKeys: [ConfigurationValidator.DatabaseConnectionKey]);
 
@@ -46,13 +49,44 @@ var productUrl = builder.Configuration["Services:ProductServiceBaseUrl"]!;
 var evaluateUrl = builder.Configuration["Services:EvaluateServiceBaseUrl"]!;
 var inventoryUrl = builder.Configuration["Services:InventoryServiceBaseUrl"]!;
 var marketingUrl = builder.Configuration["Services:MarketingServiceBaseUrl"]!;
+var paymentUrl = builder.Configuration["Services:PaymentServiceBaseUrl"]!;
+
+builder.Services.AddInternalTokenPropagation();
+
 builder.Services.AddHttpClient<OrderTimeoutCloseJob>(client =>
 {
     client.BaseAddress = new Uri(orderUrl.TrimEnd('/') + "/");
 
     // 超时要小于任务的互斥锁 TTL（90 秒），否则锁过期后下一轮会与本轮重叠
     client.Timeout = TimeSpan.FromSeconds(60);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
+
+// 0 元订单结清补偿：每轮最多 50 张，逐张重放占用结清（下游全部幂等）
+builder.Services.AddHttpClient<ZeroPaySettleJob>(client =>
+{
+    client.BaseAddress = new Uri(orderUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(60);
+}).AddHttpMessageHandler<InternalTokenHandler>();
+
+// 积分发放补偿：队列在共享 Redis 库（写入方是三个业务服务），补发打积分服务
+builder.Services.AddHttpClient(PointCompensateClient, client =>
+{
+    client.BaseAddress = new Uri(pointUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(60);
+}).AddHttpMessageHandler<InternalTokenHandler>();
+
+// 退款对账 / 支付单对账：都打支付服务
+builder.Services.AddHttpClient<RefundOrderSyncJob>(client =>
+{
+    client.BaseAddress = new Uri(paymentUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(60);
+}).AddHttpMessageHandler<InternalTokenHandler>();
+
+builder.Services.AddHttpClient<PaymentOrderSyncJob>(client =>
+{
+    client.BaseAddress = new Uri(paymentUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(60);
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddHttpClient<PointExpireJob>(client =>
 {
@@ -60,7 +94,7 @@ builder.Services.AddHttpClient<PointExpireJob>(client =>
 
     // 过期要逐个批次处理，量大时比关单慢得多，给足时间
     client.Timeout = TimeSpan.FromSeconds(120);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 // 按**具体类型**注册成 IJob，而不是 AddHttpClient<IJob, TJob>()。
 // 后者会把两个任务都注册成同一个服务类型 IJob，行为依赖「同类型多注册」的实现细节；
@@ -72,6 +106,14 @@ builder.Services.AddTransient<IJob>(sp => sp.GetRequiredService<EvaluateRecomput
 builder.Services.AddTransient<IJob>(sp => sp.GetRequiredService<StockReleaseCompensateJob>());
 builder.Services.AddTransient<IJob>(sp => sp.GetRequiredService<OrphanLockReconcileJob>());
 builder.Services.AddTransient<IJob>(sp => sp.GetRequiredService<SeckillSessionFinishJob>());
+builder.Services.AddTransient<IJob>(sp => sp.GetRequiredService<ZeroPaySettleJob>());
+builder.Services.AddTransient(sp => new PointGrantCompensateJob(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient(PointCompensateClient),
+    redis.GetDatabase(redisOptions.SharedDatabase),
+    sp.GetRequiredService<ILogger<PointGrantCompensateJob>>()));
+builder.Services.AddTransient<IJob>(sp => sp.GetRequiredService<PointGrantCompensateJob>());
+builder.Services.AddTransient<IJob>(sp => sp.GetRequiredService<RefundOrderSyncJob>());
+builder.Services.AddTransient<IJob>(sp => sp.GetRequiredService<PaymentOrderSyncJob>());
 
 builder.Services.AddHttpClient<StockReleaseCompensateJob>(client =>
 {
@@ -79,7 +121,7 @@ builder.Services.AddHttpClient<StockReleaseCompensateJob>(client =>
 
     // 补偿重试会逐条做库存变更 + 写流水，量大时比普通查询慢
     client.Timeout = TimeSpan.FromSeconds(120);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 // 孤儿对账要同时问库存服务（哪些锁是候选）和订单服务（这些单号是否真的不存在），
 // 所以需要**两个 BaseAddress 不同的 HttpClient**。
@@ -89,13 +131,13 @@ builder.Services.AddHttpClient(OrphanInventoryClient, client =>
 {
     client.BaseAddress = new Uri(inventoryUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(120);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddHttpClient(OrphanOrderClient, client =>
 {
     client.BaseAddress = new Uri(orderUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(120);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddTransient(sp => new OrphanLockReconcileJob(
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(OrphanInventoryClient),
@@ -107,13 +149,13 @@ builder.Services.AddHttpClient(ActivityCleanupMarketingClient, client =>
 {
     client.BaseAddress = new Uri(marketingUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(60);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddHttpClient(ActivityCleanupOrderClient, client =>
 {
     client.BaseAddress = new Uri(orderUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(60);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddTransient(sp => new ActivityRecordCleanupJob(
     sp.GetRequiredService<IHttpClientFactory>().CreateClient(ActivityCleanupMarketingClient),
@@ -128,7 +170,7 @@ builder.Services.AddHttpClient<ProductSearchIndexSyncJob>(client =>
 
     // 对账要扫全表并逐个补写，比关单慢得多，给足时间
     client.Timeout = TimeSpan.FromSeconds(180);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddHttpClient<EvaluateRecomputeJob>(client =>
 {
@@ -136,7 +178,7 @@ builder.Services.AddHttpClient<EvaluateRecomputeJob>(client =>
 
     // 重算要扫全量评价并逐个回写商品表，比索引对账还慢
     client.Timeout = TimeSpan.FromSeconds(300);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 // 秒杀场次到点自动结束：没有它，正常打完的场次会永远停在「进行中」，
 // 剩余库存永久锁在秒杀池里且没有任何报错（现象只是商品一直缺货）。
@@ -146,7 +188,7 @@ builder.Services.AddHttpClient<SeckillSessionFinishJob>(client =>
 
     // 单轮最多 50 个场次、逐个回补库存，比普通查询慢
     client.Timeout = TimeSpan.FromSeconds(90);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddHostedService<JobRunner>();
 

@@ -1,17 +1,14 @@
 <script setup lang="ts">
 import { onLaunch } from '@dcloudio/uni-app';
+import { usePlatformStore } from '@/stores/platform';
 import { useSessionStore } from '@/stores/session';
 
-onLaunch(() => {
-  const session = useSessionStore();
-  session.restore();
+onLaunch(async () => {
+  await usePlatformStore().initialize();
+  useSessionStore().restore();
 });
 </script>
 
-<style>
-page {
-  background: #f5f5f7;
-  color: #111;
-  font-family: 'SimpleShop Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
-}
+<style lang="scss">
+@use '@/styles/base.scss';
 </style>

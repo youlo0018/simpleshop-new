@@ -19,6 +19,11 @@ namespace Collaboration.Web;
 /// 安全边界：这些头<b>只在带对内部口令时</b>才采信。
 /// 服务端口可能被绕过网关直接访问，无条件信任头等于开了一个后门。
 /// 口令没配时一律按匿名处理并告警——宁可「没人是超管」，也不能「人人都是超管」。
+///
+/// <c>/internal/**</c> 同样要口令：它没有 X-Claim-* 可伪造，但内部身份会跳过
+/// 公开可见性过滤（内部接口要看到下架 / 待审核数据），等于把「服务间能力」
+/// 暴露给任何能访问服务端口的人。所以这里对 /internal 做 fail-closed 校验，
+/// 口令不对直接 401，而不是退化成匿名继续执行。
 /// </remarks>
 public sealed class TenantContextMiddleware
 {
@@ -60,8 +65,33 @@ public sealed class TenantContextMiddleware
             return;
         }
 
-        TenantContextHolder.Set(BuildContext(context));
+        // /internal/** 是服务间接口：必须带对内部口令才放行。
+        // 口令没配置（null）也拒绝：那是部署事故，不能让全部内部接口裸奔。
+        if (context.Request.Path.StartsWithSegments("/internal"))
+        {
+            if (_expectedToken is null || !TokenMatches(context))
+            {
+                _logger.LogWarning(
+                    "拒绝未携带内部口令的 /internal 请求：{Method} {Path}",
+                    context.Request.Method, context.Request.Path);
+                await RejectInternalAsync(context);
+                return;
+            }
 
+            await RunAsync(context, new TenantContext { Access = AccessContext.Internal });
+            return;
+        }
+
+        await RunAsync(context, BuildContext(context));
+    }
+
+    /// <summary>设置租户上下文执行后续管道，结束后必须清理。</summary>
+    /// <param name="context">当前请求。</param>
+    /// <param name="tenant">本次请求的租户上下文。</param>
+    /// <returns>管道结果。</returns>
+    private async Task RunAsync(HttpContext context, TenantContext tenant)
+    {
+        TenantContextHolder.Set(tenant);
         try
         {
             await _next(context);
@@ -73,6 +103,25 @@ public sealed class TenantContextMiddleware
         }
     }
 
+    /// <summary>拒绝没有内部口令的 /internal 请求。</summary>
+    /// <param name="context">当前请求。</param>
+    /// <returns>异步任务。</returns>
+    /// <remarks>响应体沿用 ApiResponse 形状，内部调用方解析失败时能留下可读的错误。</remarks>
+    private static async Task RejectInternalAsync(HttpContext context)
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            success = false,
+            code = StatusCodes.Status401Unauthorized,
+            message = "内部接口未授权"
+        });
+    }
+
+    /// <summary>判断是否为探活路径（/health、/ready 不参与租户判定）。</summary>
+    /// <param name="path">请求路径。</param>
+    /// <returns>是探活路径返回 true。</returns>
     private static bool IsProbe(PathString path)
         => path.StartsWithSegments("/health") || path.StartsWithSegments("/ready");
 
@@ -81,14 +130,6 @@ public sealed class TenantContextMiddleware
     /// <returns>租户上下文。</returns>
     private TenantContext BuildContext(HttpContext http)
     {
-        // 内部接口先判：它不是「公开页面」，调用方要的是真实状态（见 AccessContext.Internal）。
-        // 必须早于口令判定 —— 内部调用本来就不带 X-Claim-*，
-        // 按下面的逻辑会落成 Anonymous，于是被误加公开可见性过滤。
-        if (http.Request.Path.StartsWithSegments("/internal"))
-        {
-            return new TenantContext { Access = AccessContext.Internal };
-        }
-
         var anonymous = new TenantContext { Access = AccessContext.Anonymous };
 
         if (_expectedToken is null) return anonymous;
@@ -108,6 +149,7 @@ public sealed class TenantContextMiddleware
             UserId = userId,
             UserName = ReadString(http, TenancyOptions.Headers.UserName),
             CustomerNo = ReadString(http, TenancyOptions.Headers.CustomerNo),
+            SessionId = ReadString(http, TenancyOptions.Headers.SessionId),
             TenantType = tenantType,
             PlatformId = ReadLong(http, TenancyOptions.Headers.PlatformId),
             MerchantId = ReadLong(http, TenancyOptions.Headers.MerchantId),
@@ -128,12 +170,20 @@ public sealed class TenantContextMiddleware
         return CryptographicOperations.FixedTimeEquals(bytes, _expectedToken);
     }
 
+    /// <summary>读长整型请求头：缺失或解析失败一律返回 0。</summary>
+    /// <param name="http">当前请求。</param>
+    /// <param name="name">请求头名。</param>
+    /// <returns>请求头里的数值；没有或非法时为 0。</returns>
     private static long ReadLong(HttpContext http, string name)
     {
         if (!http.Request.Headers.TryGetValue(name, out var v)) return 0;
         return long.TryParse(v.ToString(), out var result) ? result : 0;
     }
 
+    /// <summary>读字符串请求头并 trim；缺失返回空串。</summary>
+    /// <param name="http">当前请求。</param>
+    /// <param name="name">请求头名。</param>
+    /// <returns>请求头值；没有时为空串。</returns>
     private static string ReadString(HttpContext http, string name)
         => http.Request.Headers.TryGetValue(name, out var v) ? v.ToString().Trim() : string.Empty;
 

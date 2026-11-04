@@ -37,6 +37,7 @@ public sealed class GatewaySecurityMiddleware
     private readonly RequestDelegate _next;
     private readonly DualTokenValidator _validator;
     private readonly AdminSessionRevocationChecker _revocations;
+    private readonly CustomerSessionChecker _sessions;
     private readonly RoutePermissionCache _permissions;
     private readonly GatewayOptions _options;
     private readonly ILogger<GatewaySecurityMiddleware> _logger;
@@ -45,6 +46,7 @@ public sealed class GatewaySecurityMiddleware
     /// <param name="next">下一段管道。</param>
     /// <param name="validator">双令牌验签器。</param>
     /// <param name="revocations">后台令牌吊销检查器。</param>
+    /// <param name="sessions">客户会话检查器（登出 / 过期后立刻失效）。</param>
     /// <param name="permissions">RBAC 映射缓存。</param>
     /// <param name="options">网关配置。</param>
     /// <param name="logger">日志器。</param>
@@ -52,6 +54,7 @@ public sealed class GatewaySecurityMiddleware
         RequestDelegate next,
         DualTokenValidator validator,
         AdminSessionRevocationChecker revocations,
+        CustomerSessionChecker sessions,
         RoutePermissionCache permissions,
         IOptions<GatewayOptions> options,
         ILogger<GatewaySecurityMiddleware> logger)
@@ -59,6 +62,7 @@ public sealed class GatewaySecurityMiddleware
         _next = next;
         _validator = validator;
         _revocations = revocations;
+        _sessions = sessions;
         _permissions = permissions;
         _options = options.Value;
         _logger = logger;
@@ -87,9 +91,39 @@ public sealed class GatewaySecurityMiddleware
             return;
         }
 
-        // 匿名白名单：只登记登录 / 注册 / 换令牌 / 图片回源
+        // 匿名白名单：只登记登录 / 注册 / 换令牌 / 图片回源 / 游客浏览。
+        //
+        // 但**带了令牌的请求仍要验签并注入声明**：C 端商品卡要按登录客户自己的券算到手价，
+        // 而「匿名路径直接放行」会让下游拿不到任何客户上下文 —— 那样它只能去信
+        // 客户端传进来的 customerId（实测：传任意客户 Id 就能读到别人的券码）。
+        // 没带令牌照旧按游客放行，所以「没登录也能逛」不受影响。
         if (IsAnonymous(path))
         {
+            var anonymousToken = DualTokenValidator.ExtractBearer(context.Request.Headers.Authorization.ToString());
+            if (anonymousToken is not null)
+            {
+                var anonymousOutcome = await _validator.ValidateAsync(anonymousToken);
+                if (!anonymousOutcome.Succeeded)
+                {
+                    _logger.LogWarning(
+                        "匿名路径上的令牌验签失败：{Path} {Error}", path, anonymousOutcome.Error);
+                    await RejectAsync(context, StatusCodes.Status401Unauthorized,
+                        new { error = "invalid_token", error_description = "The access token is not valid." });
+                    return;
+                }
+
+                context.User = anonymousOutcome.Principal!;
+
+                // 匿名路径上带了客户令牌，同样要过服务端会话：登出后即使令牌还没到期，
+                // 也不该再用它读「按客户算的到手价」之类的个性化数据。
+                if (!await CheckCustomerSessionAsync(context, anonymousOutcome, path))
+                {
+                    return;
+                }
+
+                InjectClaims(context, context.User);
+            }
+
             await _next(context);
             return;
         }
@@ -140,6 +174,14 @@ public sealed class GatewaySecurityMiddleware
             }
         }
 
+        // ---- 第 2.6 步：客户会话 ----
+        // 客户令牌的吊销语义由 CustomerService 的会话键承载：登出 / 刷新会删旧键。
+        // 验签只证明「是我们签的、还没过期」，证明不了「这个会话已经失效」。
+        if (!await CheckCustomerSessionAsync(context, outcome, path))
+        {
+            return;
+        }
+
         // ---- 第 3 步：RBAC ----
         var lookup = await _permissions.ResolveAsync(path);
         var requiredCode = lookup.RequiredCode;
@@ -167,6 +209,33 @@ public sealed class GatewaySecurityMiddleware
             _logger.LogWarning("权限不足：{Path} 需要 {Code}", path, requiredCode);
             await RejectAsync(context, StatusCodes.Status403Forbidden,
                 new { error = "insufficient_permissions", error_description = $"Requires '{requiredCode}'." });
+            return;
+        }
+        else if (requiredCode is null
+                 && outcome.Kind == DualTokenValidator.KindCustomer
+                 && !IsCustomerPath(path))
+        {
+            // 🔴 客户令牌走到未映射路径，且**不在 C 端显式清单里** → 拒绝（fail-closed）。
+            //
+            // 上面只堵住了后台令牌。客户令牌这条支路原来是「未映射 = C 端接口 = 放行」，
+            // 于是任何新加的后台接口只要漏配 api_path（而 api_path 漏配是静态的、
+            // 没有日志、超管测试完全测不出来），任何顾客都能直接调它 ——
+            // /gateway/payments/Simulate 就是这么被顾客拿去白拿商品的。
+            //
+            // 现在 C 端接口要在 GatewayOptions.CustomerPaths 显式登记：
+            // 漏登记的症状是 403（马上会被回归测试和联调发现），
+            // 而不是「接口对全世界敞开」这种静默的资损。
+            _logger.LogError(
+                "拒绝客户令牌访问未登记的路径 {Path}：它不在 C 端接口清单里。"
+                + "如果是新增的 C 端接口，请登记到 GatewayOptions.CustomerPaths；"
+                + "如果是后台接口，请补权限种子的 api_path", path);
+
+            await RejectAsync(context, StatusCodes.Status403Forbidden,
+                new
+                {
+                    error = "route_not_mapped",
+                    error_description = "This route is not registered for customer access.",
+                });
             return;
         }
         else if (requiredCode is null && outcome.Kind != DualTokenValidator.KindCustomer)
@@ -216,6 +285,63 @@ public sealed class GatewaySecurityMiddleware
         => _options.CustomerAllowedPaths.Any(p =>
             string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>判断路径是否在 C 端接口显式清单里（精确 + 前缀）。</summary>
+    /// <param name="path">网关路径。</param>
+    /// <returns>命中返回 true。</returns>
+    private bool IsCustomerPath(string path)
+    {
+        if (_options.CustomerPaths.Any(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return _options.CustomerPathPrefixes.Any(p =>
+            path.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>校验客户令牌对应的服务端会话，失败时直接写出 401/503。</summary>
+    /// <param name="context">当前请求。</param>
+    /// <param name="outcome">验签结果（只有客户令牌会真正查会话）。</param>
+    /// <param name="path">请求路径，仅用于日志。</param>
+    /// <returns>可以继续管道返回 true；已拒绝并写出响应返回 false。</returns>
+    /// <remarks>
+    /// <b>Redis 不可用时 503 而不是 401</b>：存储故障与「会话被登出」是两回事，
+    /// 都回 401 会让客户端误以为令牌失效而清掉本地会话，故障恢复后还得重新登录。
+    /// </remarks>
+    private async Task<bool> CheckCustomerSessionAsync(
+        HttpContext context, TokenValidationOutcome outcome, string path)
+    {
+        if (outcome.Kind != DualTokenValidator.KindCustomer)
+        {
+            return true;
+        }
+
+        var principal = outcome.Principal!;
+        var customerId = long.TryParse(First(principal, "sub"), out var id) ? id : 0;
+        var sessionId = First(principal, "jti");
+
+        var check = await _sessions.CheckAsync(
+            customerId, sessionId, TimeSpan.FromHours(_options.CustomerToken.SessionHours));
+
+        if (check.StoreUnavailable)
+        {
+            _logger.LogError("客户会话存储不可用，拒绝 {Path}（fail-closed）", path);
+            await RejectAsync(context, StatusCodes.Status503ServiceUnavailable,
+                new { error = "authorization_unavailable", error_description = "The session store is unavailable." });
+            return false;
+        }
+
+        if (!check.Valid)
+        {
+            _logger.LogWarning("客户 {CustomerId} 的会话已失效，拒绝 {Path}", customerId, path);
+            await RejectAsync(context, StatusCodes.Status401Unauthorized,
+                new { error = "invalid_token", error_description = "The session has expired or been signed out." });
+            return false;
+        }
+
+        return true;
+    }
+
     /// <summary>判断主体是否持有指定权限点。</summary>
     /// <remarks>
     /// 只认令牌里的 permission 声明，且<b>只对后台令牌</b>有意义：
@@ -237,6 +363,8 @@ public sealed class GatewaySecurityMiddleware
         headers[TenancyOptions.Headers.PlatformId] = First(principal, "platform_id");
         headers[TenancyOptions.Headers.MerchantId] = First(principal, "merchant_id");
         headers[TenancyOptions.Headers.CustomerNo] = First(principal, "customer_no");
+        // jti 就是会话 Id：登出 / 刷新要按它定位当前设备那一把会话键
+        headers[TenancyOptions.Headers.SessionId] = First(principal, "jti");
 
         var permissions = principal.FindAll("permission").Select(c => c.Value)
             .Where(v => !string.IsNullOrEmpty(v)).Distinct(StringComparer.Ordinal).ToArray();
@@ -254,6 +382,10 @@ public sealed class GatewaySecurityMiddleware
         return raw is "1" or "2" ? raw : "3";
     }
 
+    /// <summary>取令牌里第一个指定名称的声明值；没有返回空串。</summary>
+    /// <param name="principal">验签后的主体。</param>
+    /// <param name="type">声明名。</param>
+    /// <returns>声明值或空串。</returns>
     private static string First(ClaimsPrincipal principal, string type)
         => principal.FindFirst(type)?.Value ?? string.Empty;
 

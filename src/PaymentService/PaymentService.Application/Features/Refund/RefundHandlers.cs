@@ -1,4 +1,5 @@
 using Collaboration.Domain.Common;
+using System.Text.Json;
 using MediatR;
 using PaymentService.Application.Features.Payment;
 using PaymentService.Application.Services;
@@ -64,9 +65,12 @@ public sealed class ApplyRefundHandler : IRequestHandler<ApplyRefundCommand, Api
         // 申请时把「待审批」也算作已占用：否则同一订单能连开两张注定过不了的退款单，
         // 用户填完原因提交才发现余额不够，白填一遍
         var refundedItems = await _refunds.ListRefundedItemsAsync(orderNo, true, ct).ConfigureAwait(false);
-        var alreadyRefunded = refundedItems.Sum(a => a.Amount);
+        // 订单级余额用**主表金额合计**（含运费）：明细只记商品行金额，
+        // 用它比实付会把整单退里那笔运费当成还没退，再退一次就多退一笔运费。
+        var alreadyRefunded = await _refunds.SumRefundedAmountAsync(orderNo, true, ct).ConfigureAwait(false);
 
-        var (isWhole, total, itemAmounts, resolveError) = ResolveItems(request.Items, order, refundedItems);
+        var (isWhole, total, itemAmounts, resolveError) =
+            ResolveItems(request.Items, order, refundedItems, alreadyRefunded);
         if (resolveError.Length > 0)
         {
             return ApiResults.Fail<long>(BaseApiResponseCode.BusinessError, resolveError);
@@ -90,11 +94,12 @@ public sealed class ApplyRefundHandler : IRequestHandler<ApplyRefundCommand, Api
             Amount = total,
             RefundType = isWhole ? RefundTypes.Whole : RefundTypes.Partial,
             Status = RefundStatuses.PendingApproval,
-            Reason = request.Reason.Trim()
+            Reason = request.Reason.Trim(),
+            Images = JsonSerializer.Serialize(request.Images ?? Array.Empty<string>())
         };
 
         var items = new List<RefundOrderItem>();
-        foreach (var (orderItemId, amount) in itemAmounts)
+        foreach (var (orderItemId, quantity, amount) in itemAmounts)
         {
             var line = order.Items.First(a => a.OrderItemId == orderItemId);
             items.Add(new RefundOrderItem
@@ -103,7 +108,9 @@ public sealed class ApplyRefundHandler : IRequestHandler<ApplyRefundCommand, Api
                 SkuId = line.SkuId,
                 ProductName = line.ProductName,
                 SkuSpecText = line.SkuSpecText,
-                Quantity = line.Quantity,
+                // 🔴 记调用方声明的**本次退件数**，不是整行数量：
+                // 订单侧按这个数回补库存，拿整行数量会让「买 3 退 1」放回 3 件。
+                Quantity = quantity,
                 Amount = RefundRules.Round2(amount)
             });
         }
@@ -115,27 +122,54 @@ public sealed class ApplyRefundHandler : IRequestHandler<ApplyRefundCommand, Api
         return ApiResults.Ok(refundId, "退款申请已提交，等待审批");
     }
 
-    /// <summary>解析本次要退的行与金额。</summary>
+    /// <summary>解析本次要退的行、件数与金额。</summary>
     /// <param name="inputs">调用方传入的行；空表示整单退。</param>
     /// <param name="order">订单信息。</param>
-    /// <param name="refundedItems">该订单已退款明细。</param>
-    /// <returns>是否整单退、总金额、逐行金额、错误信息。出错时 Error 非空。</returns>
-    private static (bool IsWhole, decimal Total, List<(long ItemId, decimal Amount)> ItemAmounts, string Error)
+    /// <param name="refundedItems">该订单已退明细（含待审批）。</param>
+    /// <param name="alreadyRefunded">该订单累计已退金额（主表口径，含运费）。</param>
+    /// <returns>是否整单退、总金额、逐行（订单行 / 件数 / 金额）、错误信息。出错时 Error 非空。</returns>
+    private static (bool IsWhole, decimal Total, List<(long ItemId, int Quantity, decimal Amount)> ItemAmounts, string Error)
         ResolveItems(
             IReadOnlyList<RefundItemInput>? inputs,
             Services.OrderForPayment order,
-            IReadOnlyList<RefundOrderItem> refundedItems)
+            IReadOnlyList<RefundOrderItem> refundedItems,
+            decimal alreadyRefunded)
     {
         if (inputs is null || inputs.Count == 0)
         {
-            // 整单退：含运费（规格 10.2）。部分退才不退运费
-            var all = order.Items.Select(a => (a.OrderItemId, Amount: a.PayableAmount)).ToList();
-            var goodsTotal = all.Sum(a => a.Amount);
-            var withFreight = RefundRules.Round2(goodsTotal + order.Freight);
-            return (true, withFreight, all, string.Empty);
+            // 整单退：每行退「行实付 − 已退」与「行数量 − 已退件数」，再加运费（规格 10.2）。
+            // 原实现直接用行实付原值：先部分退一次、再整单退时，行金额会超过该行剩余可退，
+            // 台账与行级余额当场写错。
+            var result = new List<(long ItemId, int Quantity, decimal Amount)>();
+            var goodsRemaining = 0m;
+
+            foreach (var line in order.Items)
+            {
+                var lineRefunded = refundedItems.Where(a => a.OrderItemId == line.OrderItemId).ToList();
+                var remainingAmount = RefundRules.Round2(
+                    Math.Max(0m, line.PayableAmount - lineRefunded.Sum(a => a.Amount)));
+                if (remainingAmount <= 0m) continue;
+
+                var remainingQuantity = Math.Max(0, line.Quantity - lineRefunded.Sum(a => a.Quantity));
+                result.Add((line.OrderItemId, remainingQuantity, remainingAmount));
+                goodsRemaining += remainingAmount;
+            }
+
+            // 可退总额取「订单剩余余额」与「商品剩余 + 运费」的较小者：
+            // 运费已经随上一次整单退退过之后，后者会偏大。
+            var remainingOrder = RefundRules.Round2(order.PayableAmount - alreadyRefunded);
+            var total = RefundRules.Round2(Math.Min(remainingOrder, goodsRemaining + order.Freight));
+            if (total <= 0m)
+            {
+                // 常见原因就是「已经有一张待审批的整单退款申请」把余额占住了 ——
+                // 这里必须挡住：同一订单连开两张注定过不了的退款单，用户填完才发现白填。
+                return (true, 0m, [], "该订单没有可退余额（可能已申请过退款，或余额已退完）");
+            }
+
+            return (true, total, result, string.Empty);
         }
 
-        var result = new List<(long ItemId, decimal Amount)>();
+        var items = new List<(long ItemId, int Quantity, decimal Amount)>();
         foreach (var input in inputs)
         {
             var line = order.Items.FirstOrDefault(a => a.OrderItemId == input.OrderItemId);
@@ -146,19 +180,28 @@ public sealed class ApplyRefundHandler : IRequestHandler<ApplyRefundCommand, Api
 
             var lineRefunded = refundedItems
                 .Where(a => a.OrderItemId == input.OrderItemId)
-                .Sum(a => a.Amount);
+                .ToList();
+            var refundedAmount = lineRefunded.Sum(a => a.Amount);
 
-            if (!RefundRules.WithinLineBalance(input.Amount, line.PayableAmount, lineRefunded))
+            if (!RefundRules.WithinLineBalance(input.Amount, line.PayableAmount, refundedAmount))
             {
                 return (false, 0m, [],
                     $"「{line.ProductName}」本行可退余额不足，申请 {input.Amount:0.00} 元，" +
-                    $"最多还能退 {(line.PayableAmount - lineRefunded):0.00} 元");
+                    $"最多还能退 {(line.PayableAmount - refundedAmount):0.00} 元");
             }
 
-            result.Add((input.OrderItemId, RefundRules.Round2(input.Amount)));
+            // 件数 0 = 只退钱不回补库存（价保 / 补偿场景）；件数 > 0 时不能超过还没退的件数。
+            var remainingQuantity = Math.Max(0, line.Quantity - lineRefunded.Sum(a => a.Quantity));
+            if (input.Quantity > remainingQuantity)
+            {
+                return (false, 0m, [],
+                    $"「{line.ProductName}」本次退 {input.Quantity} 件超过还可退 {remainingQuantity} 件");
+            }
+
+            items.Add((input.OrderItemId, input.Quantity, RefundRules.Round2(input.Amount)));
         }
 
-        return (false, RefundRules.Round2(result.Sum(a => a.Amount)), result, string.Empty);
+        return (false, RefundRules.Round2(items.Sum(a => a.Amount)), items, string.Empty);
     }
 
     /// <summary>生成退款单号：时间戳 + 6 位随机数。</summary>

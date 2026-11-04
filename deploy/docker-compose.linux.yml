@@ -27,24 +27,39 @@ services:
     mem_limit: 320m
 
   rabbitmq:
+    # 固定节点名：默认节点名取容器主机名（容器 ID），每次 recreate 都会换一个，
+    # 结果是 mnesia 目录永远对不上、重启后队列和用户全部"消失"。
+    hostname: simpleshop-rabbit
     environment:
-      # Erlang 默认吃内存较凶，把「内存高水位」压到 25%，超过就先堵住生产者而不是 OOM。
-      RABBITMQ_VM_MEMORY_HIGH_WATERMARK: "0.25"
+      RABBITMQ_NODENAME: rabbit@simpleshop-rabbit
+    # 「内存高水位」改走配置文件：3.13 镜像把 RABBITMQ_* 废弃环境变量当成致命错误，
+    # 再用环境变量会直接卡在重启循环。值见 rabbitmq.conf（0.25，超过先堵生产者而非 OOM）。
+    volumes:
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     mem_limit: 640m
 
   agileconfig:
+    # 基础文件用 wget 探活，但 kklldog/agile_config 镜像里没有 wget/curl（只有 bash）。
+    # 退化为 bash 的 /dev/tcp 端口连通性检查，避免容器实际可用却永远报 unhealthy。
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/5000'"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
     mem_limit: 640m
 
   elasticsearch:
     environment:
-      # 默认 1g 堆实测 1.9G 常驻；512m 堆对单机开发足够（索引量级：几万文档）。
-      ES_JAVA_OPTS: -Xms512m -Xmx512m
-    # 上限 = 堆 512m + 段文件/线程栈等 off-heap 余量，留到 1.6G 防 OOM kill。
-    mem_limit: 1600m
+      # 默认 1g 堆实测 1.9G 常驻；384m 堆对单机开发足够（归档索引仅几十 MB），
+      # 为同时开 Rider + 音乐软件再让出约 150M 常驻内存。
+      ES_JAVA_OPTS: -Xms384m -Xmx384m
+    # 上限 = 堆 384m + 段文件/线程栈等 off-heap 余量，留到 1.1G 防 OOM kill。
+    mem_limit: 1100m
 
   kibana:
     environment:
       # Node 默认堆按物理内存推算，13.5G 机器上会给到 1G+；显式压到 384M。
+      # 实测 256M 启动阶段就 V8 heap OOM，384M 是这台 16G 开发机能稳定启动的下限。
       NODE_OPTIONS: --max-old-space-size=384
     mem_limit: 900m
 

@@ -51,6 +51,10 @@ public class RefundOrder : AdminEntityBase
     [Column(Name = "reject_reason", StringLength = 500)]
     public string RejectReason { get; set; } = string.Empty;
 
+    /// <summary>申请凭证图片 URL 列表，JSON 数组字符串（最多 9 张）。</summary>
+    [Column(Name = "images")]
+    public string Images { get; set; } = "[]";
+
     /// <summary>审批人 Id。</summary>
     [Column(Name = "approver_id")]
     public long ApproverId { get; set; }
@@ -62,6 +66,17 @@ public class RefundOrder : AdminEntityBase
     /// <summary>审批时间 UTC。未审批为 null。</summary>
     [Column(Name = "approved_at")]
     public DateTime? ApprovedAt { get; set; }
+
+    /// <summary>
+    /// 订单侧是否已落账（台账 + 订单已退金额 + 库存 / 积分副作用）。
+    /// </summary>
+    /// <remarks>
+    /// 审批先改本表状态、再回调订单侧；订单侧失败时这里保持 false，
+    /// 由 ScheduledService 的 <c>refund_order_sync</c> 任务重放。
+    /// 订单侧按退款单号幂等，重放不会退两次。
+    /// </remarks>
+    [Column(Name = "order_synced")]
+    public bool OrderSynced { get; set; }
 }
 
 /// <summary>退款单明细（按订单行退）。</summary>
@@ -129,6 +144,9 @@ public static class RefundStatuses
     /// <summary>已拒绝。<b>无任何副作用</b>。</summary>
     public const int Rejected = 90;
 
+    /// <summary>客户主动撤销（仅待审批可撤销）。</summary>
+    public const int Withdrawn = 95;
+
     /// <summary>取中文名。</summary>
     /// <param name="status">状态值。</param>
     /// <returns>中文名，未知值返回「未知」。</returns>
@@ -137,6 +155,7 @@ public static class RefundStatuses
         PendingApproval => "待审批",
         Refunded => "已退款",
         Rejected => "已拒绝",
+        Withdrawn => "已撤销",
         _ => "未知"
     };
 }

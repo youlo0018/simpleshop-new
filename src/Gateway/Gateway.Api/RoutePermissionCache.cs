@@ -115,6 +115,12 @@ public sealed class RoutePermissionCache : IDisposable
     /// <summary>强制下次读取时重新拉取。权限点增删改后应调用。</summary>
     public void Invalidate() => _loadedAt = DateTimeOffset.MinValue;
 
+    /// <summary>确保映射已加载（缓存过期或从未加载时拉一次，带单飞锁防并发重复拉取）。</summary>
+    /// <returns>异步任务。</returns>
+    /// <remarks>
+    /// 双重检查：拿锁前后各判一次新鲜度 —— 并发请求里只有第一个真正去拉，
+    /// 其余等在锁上，拿到锁后发现已经刷新过就直接用。
+    /// </remarks>
     private async Task EnsureLoadedAsync()
     {
         var age = DateTimeOffset.UtcNow - _loadedAt;

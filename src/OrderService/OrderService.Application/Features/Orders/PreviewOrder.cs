@@ -117,6 +117,10 @@ public sealed class PreviewOrderHandler
     public async Task<ApiResponse<PreviewOrderResult>> Handle(
         PreviewOrderCommand request, CancellationToken ct)
     {
+        // 防 IDOR：试算会按客户查券包并回传券码，客户标识必须以令牌为准；
+        // 游客（无令牌 + 0）仍然放行，只算活动价。
+        var customerId = CustomerScope.Resolve(request.CustomerId);
+
         // 纠正成服务端认可的行：单价、配送方式、可售状态。
         // 刻意**不读 request 里的单价与运费** —— 试算报出来的必须是真正会收的数，
         // 否则「结算页显示 51、下单扣 61」的问题只是从计算挪到了显示。
@@ -151,7 +155,7 @@ public sealed class PreviewOrderHandler
             .ToArray();
         // 把「客户端当前选中的券」一起传过去：营销侧会额外回一份**逐行分摊**，
         // 券有作用域（全场 / 指定 SPU / 指定 SKU），只有它算得对。
-        var quote = await _coupons.QuoteAsync(request.CustomerId, couponPortLines, request.CouponId, ct)
+        var quote = await _coupons.QuoteAsync(customerId, couponPortLines, request.CouponId, ct)
             .ConfigureAwait(false);
         var options = quote.Options;
 
@@ -169,7 +173,7 @@ public sealed class PreviewOrderHandler
 
         // 试算传空订单号：用户只是看了一眼结算页，不该在营销服务留下发放承诺
         var activityBySku = await _activities.QuoteAsync(
-            request.CustomerId, platformId, 0, request.CouponId,
+            customerId, platformId, 0, request.CouponId,
             // 带上归属商户：商户级活动只作用于本商户的行。
             // 整单一个商户 —— 跨商户购物车在 ResolveAsync 里已经被拒。
             couponPortLines.Select(a => (a.SpuId, a.SkuId, a.Amount, outcome.MerchantId)).ToArray(),

@@ -93,10 +93,16 @@ public sealed class QueryAdminOrderDetailHandler
     : MediatR.IRequestHandler<QueryAdminOrderDetailCommand, ApiResponse<OrderDetailDto>>
 {
     private readonly IOrderStore _store;
+    private readonly IPickupCodeCodec _pickupCodes;
 
     /// <summary>构造处理器。</summary>
     /// <param name="store">落单端口。</param>
-    public QueryAdminOrderDetailHandler(IOrderStore store) => _store = store;
+    /// <param name="pickupCodes">RSA 取货码编解码器（待取货状态下发取货码）。</param>
+    public QueryAdminOrderDetailHandler(IOrderStore store, IPickupCodeCodec pickupCodes)
+    {
+        _store = store;
+        _pickupCodes = pickupCodes;
+    }
 
     /// <summary>执行详情查询。</summary>
     /// <param name="request">查询命令。</param>
@@ -163,7 +169,11 @@ public sealed class QueryAdminOrderDetailHandler
         }).ToList();
 
         return ApiResults.Ok(
-            OrderDetailAssembler.Build(order, items) with { Items = itemDtos });
+            OrderDetailAssembler.Build(order, items) with
+            {
+                Items = itemDtos,
+                PickupCode = OrderDetailAssembler.ResolvePickupCode(order, items, _pickupCodes)
+            });
     }
 }
 
@@ -725,6 +735,17 @@ public sealed class RefundOrderHandler
             return ApiResults.Fail<RefundResultDto>(BaseApiResponseCode.NotFound, "订单不存在");
         }
 
+        // 🔴 0 元单的占用还没结清时不能退款：库存还占着 locked、积分还冻着，
+        // 退款侧会按「状态 20 = 已扣库存」去 replenish（必然失败），
+        // 积分也会在冻结状态下被回收而重复计入可用余额。
+        // 结清由 ScheduledService 的 zero_pay_settle 任务自动重试。
+        if (order.PayableAmount == 0m && order.SettleStatus == 0)
+        {
+            return ApiResults.Fail<RefundResultDto>(
+                BaseApiResponseCode.BusinessError,
+                "该订单的占用尚未结清（0 元单由系统自动结清），请稍后重试退款");
+        }
+
         var items = await _store.ListItemsAsync(order.Id, ct).ConfigureAwait(false);
 
         // 退款窗口统一交给 OrderStatusMachine.CanRefund 判定（BUSINESS 10.2）。
@@ -797,15 +818,14 @@ public sealed class RefundOrderHandler
             };
         }).ToList();
 
-        var refundId = await _store.SaveRefundAsync(refund, detail, ct).ConfigureAwait(false);
-
-        // 🔴 余额判断在 SQL 的 WHERE 里（refunded_amount + 本次 <= payable_amount），
-        // 所以受影响行数为 0 就是「余额已被别人用掉」或「状态已变」。
-        var affected = await _store.TryApplyRefundAsync(
-            order.Id, order.Status, resolution.Total, resolution.FullyRefunded, ct)
+        // 🔴 台账与余额在同一个事务里写：余额条件更新命中 0 行时台账一起回滚。
+        // 拆成「先 SaveRefundAsync 再 TryApplyRefundAsync」的话，并发失败会留下
+        // 一条金额从未生效的幽灵退款记录，把行级可退余额和整单退完判定一起污染。
+        var applied = await _store.ApplyRefundWithLedgerAsync(
+            order.Id, order.Status, resolution.Total, resolution.FullyRefunded, refund, detail, ct)
             .ConfigureAwait(false);
 
-        if (affected == 0)
+        if (!applied)
         {
             _logger.LogWarning(
                 "订单 {OrderNo} 退款 {RefundNo} 未生效（余额不足或状态已变）", order.OrderNo, refundNo);
@@ -858,13 +878,18 @@ public sealed class RefundOrderHandler
                 }
                 else if (lockedPhase)
                 {
+                    // 🔴 bizNo 带退款单号：同一订单可以有多次部分退款，只用「订单号:SKU」
+                    // 会被库存侧的 (BizNo, SkuId, Action) 幂等当成重复请求，
+                    // 第二次之后的回补**静默不生效**（实测：买 2 件分两次各退 1 件，只回了 1 件）。
                     await _inventory.ReleaseAsync(
-                        item.SkuId, line.Quantity, $"{order.OrderNo}:{item.SkuId}", ct).ConfigureAwait(false);
+                        item.SkuId, line.Quantity, $"{order.OrderNo}:{item.SkuId}:{refundNo}", ct)
+                        .ConfigureAwait(false);
                 }
                 else
                 {
                     await _inventory.ReplenishAsync(
-                        item.SkuId, line.Quantity, $"{order.OrderNo}:{item.SkuId}", ct).ConfigureAwait(false);
+                        item.SkuId, line.Quantity, $"{order.OrderNo}:{item.SkuId}:{refundNo}", ct)
+                        .ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
@@ -886,7 +911,7 @@ public sealed class RefundOrderHandler
             try
             {
                 await _points.RecoverByRefundAsync(
-                    order.CustomerId, order.OrderNo, ratio, ct).ConfigureAwait(false);
+                    order.CustomerId, order.OrderNo, refundNo, ratio, ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -906,7 +931,7 @@ public sealed class RefundOrderHandler
             OrderRefundTypes.NameOf(refund.RefundType), request.Remark);
 
         var result = new RefundResultDto(
-            refundId, refundNo, resolution.Total,
+            refund.Id, refundNo, resolution.Total,
             OrderRefundRules.Round2(order.RefundedAmount + resolution.Total),
             resolution.RemainingAfter, resolution.FullyRefunded,
             refund.RefundType, OrderRefundTypes.NameOf(refund.RefundType));

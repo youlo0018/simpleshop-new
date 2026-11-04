@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using LogService.Application;
@@ -56,6 +57,111 @@ public sealed class ElasticsearchLogQuery : ILogQuery
             && source.TryGetProperty("stackTrace", out var stack)
                 ? stack.GetString() ?? string.Empty
                 : string.Empty;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<long, long>> CountPvBySessionAsync(
+        string path,
+        IReadOnlyCollection<long> sessionIds,
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default)
+    {
+        var result = new Dictionary<long, long>();
+        if (string.IsNullOrWhiteSpace(_opt.Url)
+            || string.IsNullOrWhiteSpace(path)
+            || sessionIds is null
+            || sessionIds.Count == 0)
+        {
+            return result;
+        }
+
+        // sessionId 在索引里是 keyword，terms 过滤必须传字符串数组。
+        var ids = sessionIds
+            .Distinct()
+            .Select(a => a.ToString(CultureInfo.InvariantCulture))
+            .ToArray();
+
+        var body = new Dictionary<string, object?>
+        {
+            // size=0：只要聚合桶，不要把命中的日志文档拉回来。
+            ["size"] = 0,
+            ["query"] = new
+            {
+                @bool = new
+                {
+                    filter = new object[]
+                    {
+                        new { term = new Dictionary<string, string> { ["path"] = path } },
+                        new { terms = new Dictionary<string, string[]> { ["sessionId"] = ids } },
+                        new
+                        {
+                            range = new Dictionary<string, object>
+                            {
+                                ["occurredAt"] = new { gte = from, lt = to }
+                            }
+                        }
+                    }
+                }
+            },
+            ["aggs"] = new
+            {
+                bySession = new
+                {
+                    terms = new { field = "sessionId", size = ids.Length }
+                }
+            }
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http
+                .PostAsJsonAsync($"{_opt.PvIndex}/_search", body, JsonOpts, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _logger.LogError(ex, "统计秒杀场次 PV 失败，按 0 处理");
+            return result;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            _logger.LogError("统计秒杀场次 PV 失败：HTTP {Code} {Body}", (int)response.StatusCode, text);
+            return result;
+        }
+
+        var json = await response.Content
+            .ReadFromJsonAsync<JsonElement>(JsonOpts, ct).ConfigureAwait(false);
+
+        if (!json.TryGetProperty("aggregations", out var aggs)
+            || !aggs.TryGetProperty("bySession", out var bySession)
+            || !bySession.TryGetProperty("buckets", out var buckets)
+            || buckets.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        foreach (var bucket in buckets.EnumerateArray())
+        {
+            if (!bucket.TryGetProperty("key", out var key)
+                || !bucket.TryGetProperty("doc_count", out var count))
+            {
+                continue;
+            }
+
+            var rawKey = key.ValueKind == JsonValueKind.String ? key.GetString() : key.ToString();
+            if (!long.TryParse(rawKey, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id))
+            {
+                continue;
+            }
+
+            result[id] = count.GetInt64();
+        }
+
+        return result;
     }
 
     /// <summary>日志种类，决定取哪些字段。</summary>

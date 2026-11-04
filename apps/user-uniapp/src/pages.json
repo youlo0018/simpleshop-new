@@ -1,150 +1,51 @@
 {
-  "pages": [
-    {
-      "path": "pages/index/index",
-      "style": {
-        "navigationStyle": "custom",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/category/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/mall/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/seckill/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/profile/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/product/detail",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/search/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/coupon/center",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/coupon/mine",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/points/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/order/list",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/cart/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/checkout/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/order/detail",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/login/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/register/index",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/evaluate/list",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/evaluate/form",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/address/list",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/address/form",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/favorite/list",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/refund/form",
-      "style": {
-        "navigationStyle": "custom"
-      }
-    },
-    {
-      "path": "pages/shop/store",
-      "style": {
-        "navigationStyle": "custom"
-      }
+  "easycom": {
+    "autoscan": true,
+    "custom": {
+      "^uni-(.*)": "@dcloudio/uni-ui/lib/uni-$1/uni-$1.vue"
     }
+  },
+  "pages": [
+    { "path": "pages/index/index", "style": { "navigationStyle": "custom", "enablePullDownRefresh": true } },
+    { "path": "pages/category/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/cart/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/profile/index", "style": { "navigationStyle": "custom", "enablePullDownRefresh": true } },
+    { "path": "pages/mall/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/search/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/product/list", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/product/detail", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/order/list", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/order/detail", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/checkout/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/payment/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/coupon/center", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/coupon/mine", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/points/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/favorite/list", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/address/list", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/address/form", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/refund/list", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/refund/detail", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/refund/form", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/evaluate/list", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/evaluate/form", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/evaluate/mine", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/shop/list", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/shop/store", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/seckill/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/activity/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/login/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/register/index", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/profile/edit", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/password/forgot", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/password/change", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/legal/agreement", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/legal/privacy", "style": { "navigationStyle": "custom" } },
+    { "path": "pages/legal/about", "style": { "navigationStyle": "custom" } }
   ],
   "globalStyle": {
     "navigationBarTextStyle": "black",
     "navigationBarTitleText": "SimpleShop",
-    "navigationBarBackgroundColor": "#f5f5f7",
-    "backgroundColor": "#f5f5f7",
-    "backgroundTextStyle": "dark"
+    "backgroundColor": "#f5f6f8"
   }
 }

@@ -160,6 +160,29 @@ Invoke-Case 'API-LOG-005' 'pv 列表含 total / items / page / pageSize' {
     return $true
 }
 
+Invoke-Case 'API-LOG-003b' '🔴 查询串里的 sessionId 落进 pv 日志（秒杀场次 PV 归因）' {
+    # 模拟秒杀埋点请求：场次 Id 放**查询串**（请求体不进日志），中间件负责提取。
+    # 这条断了的话，秒杀报表的场次 PV 会恒为 0，而且不报任何错。
+    $sid = Get-Random -Minimum 900000 -Maximum 999999
+    $null = Post "/logs/Pv/List?sessionId=$sid" @{ page = 1; pageSize = 1 }
+
+    if (-not (Wait-Index 'simpleshop_log_pv' @{ sessionId = "$sid" })) {
+        Write-Host ("        等待超时：没有 sessionId={0} 的 pv 记录" -f $sid) -ForegroundColor DarkYellow
+        return $false
+    }
+
+    $r = Invoke-RestMethod "$Elasticsearch/simpleshop_log_pv/_search?size=1" -Method Post `
+        -Body (@{ query = @{ term = @{ sessionId = "$sid" } } } | ConvertTo-Json -Depth 6) `
+        -ContentType 'application/json' -TimeoutSec 10
+
+    $doc = $r.hits.hits[0]._source
+    $ok = $doc.sessionId -eq "$sid" -and $doc.path -like '*logs/Pv*'
+    if (-not $ok) {
+        Write-Host ("        sessionId={0} path={1}" -f $doc.sessionId, $doc.path) -ForegroundColor DarkYellow
+    }
+    return $ok
+}
+
 Invoke-Case 'API-LOG-006' '关键字过滤生效（能筛出 LogService 自己的请求）' {
     $r = Post '/logs/Pv/List' @{ page = 1; pageSize = 20; keyword = 'logs/Pv' }
     # 没有匹配时返回空列表也算通过——关键是接口不能报错、也不能把不匹配的塞回来

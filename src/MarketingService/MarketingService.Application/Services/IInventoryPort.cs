@@ -1,5 +1,4 @@
 using System.Net.Http.Json;
-using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Collaboration.Domain.Common;
 using Microsoft.Extensions.Logging;
@@ -13,6 +12,12 @@ namespace MarketingService.Application.Services;
 /// </remarks>
 public interface IInventoryPort
 {
+    /// <summary>库存动作名：发布场次划出。</summary>
+    public const string ReserveAction = "seckill_reserve";
+
+    /// <summary>库存动作名：结束场次回补。</summary>
+    public const string ReleaseAction = "seckill_release";
+
     /// <summary>把库存从常规池划到秒杀池。</summary>
     /// <param name="skuId">SKU Id。</param>
     /// <param name="quantity">划出数量。</param>
@@ -28,17 +33,26 @@ public interface IInventoryPort
     /// <param name="ct">取消令牌。</param>
     /// <returns>成功返回 true。</returns>
     Task<bool> ReleaseAsync(long skuId, int quantity, string bizNo, CancellationToken ct = default);
+
+    /// <summary>查某次库存动作是否真的发生过。</summary>
+    /// <param name="skuId">SKU Id。</param>
+    /// <param name="bizNo">业务单号。</param>
+    /// <param name="action">动作名，见 <see cref="ReserveAction"/> / <see cref="ReleaseAction"/>。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>流水存在返回 true。</returns>
+    /// <remarks>
+    /// 回补前必须先用它确认 <see cref="ReserveAction"/> 流水存在：
+    /// <c>seckill_release</c> 是无条件加法，对从未划出过库存的商品释放会**凭空多出库存**。
+    /// 「部分划出后中止」的场次正是这种形状（有的 SKU 划过、有的没划过）。
+    /// 查询失败要抛异常（fail-closed），不能当成「没划过」——
+    /// 那会把该还的货留在秒杀池里。
+    /// </remarks>
+    Task<bool> HasFlowAsync(long skuId, string bizNo, string action, CancellationToken ct = default);
 }
 
 /// <summary>走内网 HTTP 调库存服务的实现。</summary>
 public sealed class HttpInventoryPort : IInventoryPort
 {
-    /// <summary>库存动作名：发布场次划出。</summary>
-    private const string ReserveAction = "seckill_reserve";
-
-    /// <summary>库存动作名：结束场次回补。</summary>
-    private const string ReleaseAction = "seckill_release";
-
     private readonly HttpClient _http;
     private readonly ILogger<HttpInventoryPort> _logger;
 
@@ -53,11 +67,45 @@ public sealed class HttpInventoryPort : IInventoryPort
 
     /// <inheritdoc />
     public Task<bool> ReserveAsync(long skuId, int quantity, string bizNo, CancellationToken ct = default)
-        => ApplyAsync(skuId, quantity, bizNo, ReserveAction, ct);
+        => ApplyAsync(skuId, quantity, bizNo, IInventoryPort.ReserveAction, ct);
 
     /// <inheritdoc />
     public Task<bool> ReleaseAsync(long skuId, int quantity, string bizNo, CancellationToken ct = default)
-        => ApplyAsync(skuId, quantity, bizNo, ReleaseAction, ct);
+        => ApplyAsync(skuId, quantity, bizNo, IInventoryPort.ReleaseAction, ct);
+
+    /// <inheritdoc />
+    public async Task<bool> HasFlowAsync(
+        long skuId, string bizNo, string action, CancellationToken ct = default)
+    {
+        var response = await _http
+            .PostAsJsonAsync(
+                "internal/inventory/Flows/Get",
+                new StockFlowQuery(skuId, bizNo, action),
+                ct)
+            .ConfigureAwait(false);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            // 查不到就问不出「这批货划过没有」。当成「没划过」会把该还的货留在秒杀池里，
+            // 所以这里抛出去，由调用方记入失败清单并保留标志重试。
+            _logger.LogError(
+                "库存流水查询失败：SKU {SkuId} / {Action} / HTTP {Code}",
+                skuId, action, (int)response.StatusCode);
+            throw new InvalidOperationException(
+                $"库存流水查询失败（SKU {skuId} / HTTP {(int)response.StatusCode}）");
+        }
+
+        var body = await response.Content
+            .ReadFromJsonAsync<ApiResponse<StockFlowSnapshot>>(ct)
+            .ConfigureAwait(false);
+
+        if (body is null || !body.Success)
+        {
+            throw new InvalidOperationException($"库存流水查询失败：{body?.Message ?? "(空响应)"}");
+        }
+
+        return body.Data is not null;
+    }
 
     /// <summary>调用一次库存变更。</summary>
     /// <param name="skuId">SKU Id。</param>
@@ -93,7 +141,7 @@ public sealed class HttpInventoryPort : IInventoryPort
         {
             // 库存不足在划出时是正常的「卖不了」，返回 false 让上层跳过这个商品；
             // 回补时走到这里则是真故障，同样抛出去，由上层记入失败清单
-            if (action == ReserveAction)
+            if (action == IInventoryPort.ReserveAction)
             {
                 _logger.LogWarning("SKU {SkuId} 划出 {Qty} 件失败：{Message}", skuId, quantity, body?.Message);
                 return false;
@@ -121,6 +169,26 @@ public sealed class HttpInventoryPort : IInventoryPort
         [property: JsonPropertyName("remark")] string Remark,
         [property: JsonPropertyName("platformId")] long PlatformId,
         [property: JsonPropertyName("merchantId")] long MerchantId);
+
+    /// <summary>库存流水查询请求体。</summary>
+    /// <param name="SkuId">SKU Id。</param>
+    /// <param name="BizNo">业务单号。</param>
+    /// <param name="Action">动作名。</param>
+    private sealed record StockFlowQuery(
+        [property: JsonPropertyName("skuId")] long SkuId,
+        [property: JsonPropertyName("bizNo")] string BizNo,
+        [property: JsonPropertyName("action")] string Action);
+
+    /// <summary>库存流水快照（data 为 null 表示没发生过）。</summary>
+    /// <param name="SkuId">SKU Id。</param>
+    /// <param name="BizNo">业务单号。</param>
+    /// <param name="Action">动作名。</param>
+    /// <param name="Quantity">数量。</param>
+    private sealed record StockFlowSnapshot(
+        [property: JsonPropertyName("skuId")] long SkuId,
+        [property: JsonPropertyName("bizNo")] string BizNo,
+        [property: JsonPropertyName("action")] string Action,
+        [property: JsonPropertyName("quantity")] int Quantity);
 
     /// <summary>库存变更结果。</summary>
     /// <param name="SkuId">SKU Id。</param>

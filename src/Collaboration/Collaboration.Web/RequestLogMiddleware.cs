@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using Collaboration.Domain.Context;
 using Collaboration.Domain.Messaging;
 using Microsoft.AspNetCore.Builder;
@@ -99,7 +100,8 @@ public sealed class RequestLogMiddleware
             elapsedMs,
             ResolveClientIp(context),
             context.Request.Headers.UserAgent.ToString(),
-            requestId);
+            requestId,
+            ResolveSessionId(context));
 
         await SafePublishAsync(EventTopics.PvLog, pv).ConfigureAwait(false);
 
@@ -161,6 +163,28 @@ public sealed class RequestLogMiddleware
         }
 
         return context.TraceIdentifier;
+    }
+
+    /// <summary>取查询串里的秒杀场次 Id（PV 归因用）。</summary>
+    /// <param name="context">当前请求。</param>
+    /// <returns>规范化后的场次 Id；没有或不是正整数时返回 null。</returns>
+    /// <remarks>
+    /// <para>只认正整数：秒杀埋点由前端显式带 <c>?sessionId=</c>，
+    /// 别的请求即使碰巧带了这个参数，也不会把垃圾值写进可聚合字段。</para>
+    ///
+    /// <para>为什么从<b>查询串</b>取而不是请求体：请求体不进日志（见 BUSINESS.md 17 的说明），
+    /// 所以约定埋点走查询参数，日志服务才能按 sessionId 聚合。</para>
+    /// </remarks>
+    private static string? ResolveSessionId(HttpContext context)
+    {
+        var raw = context.Request.Query["sessionId"].ToString();
+        if (!long.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
+            || value <= 0)
+        {
+            return null;
+        }
+
+        return value.ToString(CultureInfo.InvariantCulture);
     }
 
     /// <summary>取客户端 IP。</summary>

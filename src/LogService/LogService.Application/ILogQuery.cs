@@ -56,6 +56,11 @@ public sealed record LogView(
 public sealed record LogPage(
     IReadOnlyList<LogView> Items, long Total, int Page, int PageSize);
 
+/// <summary>某个秒杀场次的 PV 计数。</summary>
+/// <param name="SessionId">秒杀场次 Id。</param>
+/// <param name="Count">页面访问次数（PV）。</param>
+public sealed record SessionPvCount(long SessionId, long Count);
+
 /// <summary>日志查询端口（读侧）。</summary>
 public interface ILogQuery
 {
@@ -82,4 +87,21 @@ public interface ILogQuery
     /// <param name="ct">取消令牌。</param>
     /// <returns>调用栈全文；找不到返回空串。</returns>
     Task<string> GetExceptionStackAsync(string id, CancellationToken ct = default);
+
+    /// <summary>按埋点路径统计每个秒杀场次的 PV。</summary>
+    /// <param name="path">埋点请求的路径（精确匹配，下游服务记录的 Path）。</param>
+    /// <param name="sessionIds">要统计的场次 Id；空集合直接返回空结果。</param>
+    /// <param name="from">开始时间 UTC（含）。</param>
+    /// <param name="to">结束时间 UTC（不含）。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>
+    /// 场次 Id → PV 次数。ES 不可用时返回空字典：
+    /// PV 只是报表里的一项指标，不该把整张报表拖成 500。
+    /// </returns>
+    Task<IReadOnlyDictionary<long, long>> CountPvBySessionAsync(
+        string path,
+        IReadOnlyCollection<long> sessionIds,
+        DateTime from,
+        DateTime to,
+        CancellationToken ct = default);
 }

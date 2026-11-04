@@ -1,8 +1,7 @@
 using Collaboration.Domain.Common;
-using Collaboration.Domain.Infrastructure;
-using FreeSql;
 using MarketingService.Application.Features.Coupon;
 using MarketingService.Domain.Entities;
+using MarketingService.Domain.IRepository;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 
@@ -13,15 +12,19 @@ namespace MarketingService.Api.Controllers;
 [Route("marketing")]
 public sealed class CouponAdminController : ControllerBase
 {
-    private readonly IFreeSql _db;
+    private readonly ICouponRepository _coupons;
+    private readonly IPromotionRepository _promotions;
     private readonly IMediator _mediator;
 
     /// <summary>构造控制器。</summary>
-    /// <param name="db">FreeSql 实例。</param>
+    /// <param name="coupons">券仓储。</param>
+    /// <param name="promotions">活动仓储，用于营销配置。</param>
     /// <param name="mediator">MediatR 入口。</param>
-    public CouponAdminController(IFreeSql db, IMediator mediator)
+    public CouponAdminController(
+        ICouponRepository coupons, IPromotionRepository promotions, IMediator mediator)
     {
-        _db = db;
+        _coupons = coupons;
+        _promotions = promotions;
         _mediator = mediator;
     }
 
@@ -98,11 +101,13 @@ public sealed class CouponAdminController : ControllerBase
 
     /// <summary>查询券模板。</summary>
     /// <param name="templateId">模板 Id。</param>
+    /// <param name="ct">取消令牌。</param>
     /// <returns>模板。</returns>
     [HttpGet("coupon-templates/Get")]
-    public ActionResult<ApiResponse<CouponTemplate>> GetTemplate([FromQuery] long templateId)
+    public async Task<ActionResult<ApiResponse<CouponTemplate>>> GetTemplate(
+        [FromQuery] long templateId, CancellationToken ct)
     {
-        var row = _db.Select<CouponTemplate>().Where(a => a.Id == templateId).First();
+        var row = await _coupons.GetTemplateAsync(templateId, ct).ConfigureAwait(false);
         return row is null ? NotFound(Envelope("券模板不存在")) : Ok(ApiResults.Ok(row));
     }
 
@@ -180,56 +185,50 @@ public sealed class CouponAdminController : ControllerBase
 
     /// <summary>查询券活动。</summary>
     /// <param name="activityId">活动 Id。</param>
+    /// <param name="ct">取消令牌。</param>
     /// <returns>券活动。</returns>
     [HttpGet("coupon-activities/Get")]
-    public ActionResult<ApiResponse<CouponActivity>> GetActivity([FromQuery] long activityId)
+    public async Task<ActionResult<ApiResponse<CouponActivity>>> GetActivity(
+        [FromQuery] long activityId, CancellationToken ct)
     {
-        var row = _db.Select<CouponActivity>().Where(a => a.Id == activityId).First();
+        var row = await _coupons.GetActivityAsync(activityId, ct).ConfigureAwait(false);
         return row is null ? NotFound(Envelope("券活动不存在")) : Ok(ApiResults.Ok(row));
     }
 
     /// <summary>读取平台优惠优先级。</summary>
     /// <param name="platformId">平台 Id。</param>
+    /// <param name="ct">取消令牌。</param>
     /// <returns>1 活动优先 / 2 券优先。</returns>
     [HttpGet("marketing-config/Get")]
-    public ActionResult<ApiResponse<MarketingConfig>> GetConfig([FromQuery] long platformId)
+    public async Task<ActionResult<ApiResponse<MarketingConfig>>> GetConfig(
+        [FromQuery] long platformId, CancellationToken ct)
     {
-        var row = _db.Select<MarketingConfig>().Where(a => a.PlatformId == platformId).First();
+        var row = await _promotions.GetConfigAsync(platformId, ct).ConfigureAwait(false);
         // 没配过就是默认「券优先」，返回默认行而不是 404
         return Ok(ApiResults.Ok(row ?? new MarketingConfig { PlatformId = platformId, Priority = MarketingPriorities.CouponFirst }));
     }
 
     /// <summary>保存平台优惠优先级。</summary>
     /// <param name="config">配置。</param>
+    /// <param name="ct">取消令牌。</param>
     /// <returns>保存结果。</returns>
     [HttpPost("marketing-config/Save")]
-    public ActionResult<ApiResponse> SaveConfig([FromBody] MarketingConfig config)
+    public async Task<ActionResult<ApiResponse>> SaveConfig(
+        [FromBody] MarketingConfig config, CancellationToken ct)
     {
         if (config.Priority is not (MarketingPriorities.ActivityFirst or MarketingPriorities.CouponFirst))
         {
             return BadRequest(Envelope("优先级只能是 1 活动优先 或 2 券优先"));
         }
 
-        var row = _db.Select<MarketingConfig>().Where(a => a.PlatformId == config.PlatformId).First();
-        if (row is null)
-        {
-            config.Id = SnowflakeId.NewId();
-            config.CreatedAt = DateTime.UtcNow;
-            _db.Insert(config).ExecuteAffrows();
-        }
-        else
-        {
-            // 用 Where + Set 而不是 Update<T>(entity)：后者在本项目已确认会生成空 SET 子句、
-            // 一条 SQL 都不发就返回 0（见 CrudRepository 的 P0 修复说明）
-            _db.Update<MarketingConfig>()
-                .Where(a => a.Id == row.Id)
-                .Set(a => new MarketingConfig { Priority = config.Priority, UpdatedAt = DateTime.UtcNow })
-                .ExecuteAffrows();
-        }
+        await _promotions.SavePriorityAsync(config.PlatformId, config.Priority, ct).ConfigureAwait(false);
 
         return Ok(ApiResults.Ok());
     }
 
+    /// <summary>构造「参数不合法」的错误信封（与本项目统一响应体之外的少数控制器内校验共用）。</summary>
+    /// <param name="message">面向用户的中文消息。</param>
+    /// <returns>错误信封。</returns>
     private static Dictionary<string, object> Envelope(string message)
         => new() { ["error"] = "invalid_request", ["error_description"] = message };
 }

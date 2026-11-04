@@ -35,6 +35,11 @@ public class RegisterValidator : AbstractValidator<RegisterCommand>
             .WithMessage(ValidationPatterns.phoneMessage);
 
         RuleFor(x => x.NickName).MaximumLength(64).WithMessage("昵称不能超过 64 个字符");
+
+        // 平台编码：客户账号是平台内账号，没有它就无法确定账号归属
+        RuleFor(x => x.PlatformCode).NotEmpty().WithMessage("缺少平台信息");
+        RuleFor(x => x.PlatformCode).Matches(ValidationPatterns.platformCodePattern)
+            .WithMessage("平台编码不正确");
     }
 }
 

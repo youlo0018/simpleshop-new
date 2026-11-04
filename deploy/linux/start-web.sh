@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# 启动两个前端（vite preview，读构建产物）。
+# 启动后台前端（vite preview，读构建产物）。
 #
-#   ./start-web.sh            # 后台 5173 + 商城 H5 5174
-#   ./start-web.sh --admin    # 只起后台
-#   ./start-web.sh --h5       # 只起商城 H5
+#   ./start-web.sh            # 起后台 5173
+#   ./start-web.sh --admin    # 同上（显式写明）
 #
 # 低内存：Node 堆压到 384M（preview 是静态服务，本来也不需要大堆）。
 # 为什么必须 build + preview、不能用 dev server：项目路径含 # 时 Vite dev-server 会白屏
@@ -13,9 +12,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 MODE="all"
 case "${1:-}" in
   --admin) MODE="admin" ;;
-  --h5)    MODE="h5" ;;
   "")      MODE="all" ;;
-  *) fail "未知参数：$1（可选 --admin / --h5）"; exit 1 ;;
+  *) fail "未知参数：$1（可选 --admin）"; exit 1 ;;
 esac
 
 require_node
@@ -59,9 +57,6 @@ start_front() {
 rc=0
 if [ "$MODE" = "all" ] || [ "$MODE" = "admin" ]; then
   start_front "web-admin" "$ROOT_DIR/apps/admin-vue" 5173 "dist" || rc=1
-fi
-if [ "$MODE" = "all" ] || [ "$MODE" = "h5" ]; then
-  start_front "web-h5" "$ROOT_DIR/apps/user-uniapp" 5174 "dist/build/h5" || rc=1
 fi
 
 exit "$rc"

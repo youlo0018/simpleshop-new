@@ -1,6 +1,7 @@
 using CartService.Application.Features.Cart;
 using CartService.Application.Services;
 using CartService.Infrastructure;
+using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.MediatR;
 using FluentValidation;
 using MediatR;
@@ -18,6 +19,8 @@ public static class ApiServiceCollectionExtensions
     /// <returns>原集合，便于链式调用。</returns>
     public static IServiceCollection AddAppServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInternalTokenPropagation();
+
         var appAssembly = typeof(AddToCartCommand).Assembly;
 
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(appAssembly));
@@ -38,7 +41,22 @@ public static class ApiServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(productUrl!.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(5);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
+
+        // 店铺名是展示字段：没配地址时用降级实现，购物车仍可用（前端显示「店铺」）。
+        var merchantUrl = configuration["Services:MerchantPlatformServiceBaseUrl"];
+        if (!string.IsNullOrWhiteSpace(merchantUrl))
+        {
+            services.AddHttpClient<IMerchantNameClient, HttpMerchantNameClient>(client =>
+            {
+                client.BaseAddress = new Uri(merchantUrl.TrimEnd('/') + "/");
+                client.Timeout = TimeSpan.FromSeconds(5);
+            }).AddHttpMessageHandler<InternalTokenHandler>();
+        }
+        else
+        {
+            services.AddSingleton<IMerchantNameClient, UnavailableMerchantNameClient>();
+        }
 
         services.AddInfrastructure();
         return services;

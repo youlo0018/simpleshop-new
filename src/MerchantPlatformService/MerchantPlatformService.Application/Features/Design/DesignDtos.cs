@@ -8,10 +8,6 @@ namespace MerchantPlatformService.Application.Features.Design;
 public sealed record DesignResult(
     string ConfigJson, int Version, bool HasDraft, IReadOnlyList<string> Warnings);
 
-/// <summary>组件定义（后台组件库展示）。</summary>
-/// <param name="Type">组件类型。</param>
-/// <param name="Name">中文名。</param>
-/// <param name="Category">分类。</param>
 /// <summary>组件库条目。</summary>
 /// <param name="Type">组件类型。</param>
 /// <param name="Name">中文名。</param>

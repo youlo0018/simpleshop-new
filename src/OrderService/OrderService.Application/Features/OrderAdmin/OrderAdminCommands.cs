@@ -169,6 +169,8 @@ public sealed record RefundResultDto(
 /// <param name="HasSelfPickup">是否含自提行，列表页据此显示「核销」按钮。</param>
 /// <param name="CustomerNo">客户唯一编码，列表页搜索框按它检索。</param>
 /// <param name="MerchantId">商户 Id，列表页的商户下拉靠它筛选。</param>
+/// <param name="PlatformName">归属平台名称，列表直接显示它而不是 Id。</param>
+/// <param name="MerchantName">归属商户名称，列表直接显示它而不是 Id。</param>
 public sealed record AdminOrderListItemDto(
     long OrderId, string OrderNo, long CustomerId, int Status, string StatusName,
     decimal PayableAmount, int ItemQuantity,

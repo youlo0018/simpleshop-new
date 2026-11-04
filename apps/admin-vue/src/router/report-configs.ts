@@ -75,13 +75,16 @@ export const REPORTS = {
 
   seckill: {
     title: '秒杀效果报表',
-    desc: '逐场次的参与 / 成功 / 售罄',
+    desc: '逐场次的曝光 / 参与 / 成功 / 售罄',
     endpoint: '/gateway/reports/Seckill',
     byRange: true,
-    note: '不含「场次 PV」：前台秒杀列表的 sessionId 在请求体里，pv 日志只记录 path 与 query，取不到。',
+    note:
+      'PV 只统计进入秒杀频道的曝光（小程序按场次埋点，日志服务聚合），' +
+      '与「参与人数」口径不同：同一客户刷新多次会记多次 PV、只算一个参与者。',
     metrics: [
       { field: 'totalParticipants', label: '参与人数合计', format: 'count', strong: true },
       { field: 'totalGrabSuccess', label: '抢购成功合计', format: 'count' },
+      { field: 'totalPv', label: 'PV 合计', format: 'count' },
       { field: 'totalGmv', label: '成交额合计', format: 'amount' },
     ],
     table: {
@@ -89,6 +92,7 @@ export const REPORTS = {
       rows: (d: any) => d.sessions || [],
       columns: [
         { field: 'sessionName', label: '场次', width: 180 },
+        { field: 'pv', label: 'PV', width: 80, num: true, format: 'count' },
         { field: 'participantCount', label: '参与', width: 90, num: true, format: 'count' },
         { field: 'grabSuccessCount', label: '成功', width: 90, num: true, format: 'count' },
         { field: 'stockTotal', label: '库存', width: 90, num: true, format: 'count' },

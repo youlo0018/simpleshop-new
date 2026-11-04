@@ -108,7 +108,7 @@ public sealed class EvaluateRepository : CrudRepository<Evaluate>, IEvaluateRepo
 
     /// <inheritdoc />
     public async Task<PagedEvaluates> PageBySpuAsync(long spuId, long skuId, int page, int pageSize,
-        CancellationToken ct = default)
+        CancellationToken ct = default, bool hasImage = false, int minStar = 0, int maxStar = 0)
     {
         // 按 SKU 过滤时必须先从 sku_ref 拿评价 Id 集合，不能直接在 evaluate 上 join：
         // 「只展示标记了该 SKU 的评价」是本表存在的全部理由（规格 14.1 详情页过滤）
@@ -124,6 +124,11 @@ public sealed class EvaluateRepository : CrudRepository<Evaluate>, IEvaluateRepo
             query = query.Where(a => ids.Contains(a.Id));
         }
 
+        // 有图筛选：图片列是 JSON 数组文本，无图为空串或 "[]"
+        if (hasImage) query = query.Where(a => a.Images != "" && a.Images != "[]");
+        if (minStar > 0) query = query.Where(a => a.StarScore >= minStar);
+        if (maxStar > 0) query = query.Where(a => a.StarScore <= maxStar);
+
         var total = await query.CountAsync(ct).ConfigureAwait(false);
         if (total == 0) return new PagedEvaluates([], 0, page, pageSize);
 
@@ -135,6 +140,28 @@ public sealed class EvaluateRepository : CrudRepository<Evaluate>, IEvaluateRepo
             .ToListAsync(ct).ConfigureAwait(false);
 
         return new PagedEvaluates(items, total, page, pageSize);
+    }
+
+    /// <inheritdoc />
+    public async Task<PagedEvaluates> PageByMerchantAsync(
+        long merchantId, long platformId, int page, int pageSize,
+        CancellationToken ct = default)
+    {
+        var safePage = Math.Max(1, page);
+        var safeSize = Math.Clamp(pageSize, 1, 50);
+        var query = Db.Select<Evaluate>()
+            .Where(a => a.MerchantId == merchantId && a.IsHidden == false)
+            .Where(a => platformId <= 0 || a.PlatformId == platformId);
+
+        var total = await query.CountAsync(ct).ConfigureAwait(false);
+        var items = await query
+            .OrderByDescending(a => a.CreatedAt)
+            .OrderByDescending(a => a.Id)
+            .Page(safePage, safeSize)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return new PagedEvaluates(items, total, safePage, safeSize);
     }
 
     /// <inheritdoc />

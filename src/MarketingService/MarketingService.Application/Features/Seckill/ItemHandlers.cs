@@ -195,7 +195,14 @@ public sealed class QueryPublicSessionsHandler
 
         var sessions = request.SessionId > 0
             ? (await _seckill.GetSessionAsync(request.SessionId, ct)) is { } s ? [s] : []
-            : await _seckill.ListPublicSessionsAsync(nowUtc, request.PlatformId, ct);
+            : await _seckill.ListPublicSessionsAsync(nowUtc, request.PlatformId, 20, ct);
+
+        // 🔴 一次批量取所有场次的商品再分组，避免「一场次一条查询」的 N+1
+        // （秒杀频道页是热路径，场次多起来就是几十条查询）。
+        var itemsBySession = (await _seckill
+                .ListItemsBySessionIdsAsync(sessions.Select(a => a.Id).ToList(), ct))
+            .GroupBy(a => a.SessionId)
+            .ToDictionary(g => g.Key, g => g.ToList());
 
         var result = new List<PublicSessionDto>(sessions.Count);
 
@@ -204,7 +211,7 @@ public sealed class QueryPublicSessionsHandler
             // 传了场次 Id 时也要按当前时间过滤：否则可以把「已结束」的场次 Id 硬塞进来
             if (session.EndTime <= nowUtc) continue;
 
-            var items = (await _seckill.ListItemsAsync(session.Id, ct))
+            var items = itemsBySession.GetValueOrDefault(session.Id, [])
                 .Where(a => a.Status == SeckillItemStatuses.Enabled)
                 .OrderBy(a => a.SortOrder).ThenBy(a => a.Id)
                 .ToList();
@@ -239,4 +246,19 @@ public sealed class QueryPublicSessionsHandler
         var seconds = (long)(target - nowUtc).TotalSeconds;
         return seconds > 0 ? seconds : 0;
     }
+}
+
+/// <summary>秒杀场次曝光埋点处理器。</summary>
+/// <remarks>
+/// 处理器只回成功：真正的记录动作在请求日志中间件里（请求结束时发 pv.log），
+/// 命令这层不需要也不应该再写一遍 —— 写两遍会让同一页浏览算成两次 PV。
+/// </remarks>
+public sealed class RecordSessionViewHandler : IRequestHandler<RecordSessionViewCommand, ApiResponse>
+{
+    /// <summary>执行埋点。</summary>
+    /// <param name="request">命令。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>空成功响应。</returns>
+    public Task<ApiResponse> Handle(RecordSessionViewCommand request, CancellationToken ct)
+        => Task.FromResult(ApiResponseFactory.Ok());
 }

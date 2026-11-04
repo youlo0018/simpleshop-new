@@ -1,3 +1,4 @@
+using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.MediatR;
 using Collaboration.Domain.Messaging;
 using FluentValidation;
@@ -10,6 +11,7 @@ using ProductService.Application.Features.Category;
 using ProductService.Application.Features.Internal;
 using ProductService.Application.Features.Logistics;
 using ProductService.Application.Features.Product;
+using ProductService.Application.Features.Search;
 using ProductService.Application.Features.Shop;
 using ProductService.Infrastructure;
 
@@ -24,6 +26,8 @@ public static class ApiServiceCollectionExtensions
     /// <returns>原集合，便于链式调用。</returns>
     public static IServiceCollection AddAppServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInternalTokenPropagation();
+
         // 必须扫 Application 程序集：Handler 与 Validator 都在那里。
         // 用 Assembly.GetExecutingAssembly() 会注册不到任何 Handler。
         var appAssembly = typeof(QueryCategoryTreeCommand).Assembly;
@@ -43,8 +47,11 @@ public static class ApiServiceCollectionExtensions
         ProductOptionValidators.AddProductOptionValidators(services);
         CreateProductValidators.AddCreateProductValidators(services);
         ShopValidators.AddShopValidators(services);
+    MerchantCategoryValidators.AddMerchantCategoryValidators(services);
         SearchIndexSyncValidators.AddSearchIndexSyncValidators(services);
         ManageSearchIndexValidators.AddManageSearchIndexValidators(services);
+        services.AddSearchSynonymRuleValidators();
+        HotKeywordValidators.AddHotKeywordValidators(services);
         LogisticsValidators.AddLogisticsValidators(services);
     SyncProductRatingsValidators.AddSyncProductRatingsValidators(services);
     OffShelfProductsByMerchantValidators.AddOffShelfProductsByMerchantValidators(services);
@@ -63,7 +70,7 @@ public static class ApiServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(inventoryUrl!.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(5);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
 
         // 营销服务地址只从配置来，代码里不写端口。
         // 前台商品列表与详情都要拿到手价，少了它整个前台就显示不出优惠。
@@ -81,7 +88,13 @@ public static class ApiServiceCollectionExtensions
             // 列表页一次要试算几十个 SKU 的到手价，给得比普通内部调用宽一些；
             // 但也别给太大：营销服务慢下来时前台会跟着卡住。
             client.Timeout = TimeSpan.FromSeconds(8);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
+
+        services.AddHttpClient<IMarketingTargetClient, HttpMarketingTargetClient>(client =>
+        {
+            client.BaseAddress = new Uri(marketingUrl!.TrimEnd('/') + "/");
+            client.Timeout = TimeSpan.FromSeconds(5);
+        }).AddHttpMessageHandler<InternalTokenHandler>();
 
         services.AddInfrastructure(configuration);
     services.AddEventBus(configuration);

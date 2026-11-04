@@ -259,10 +259,13 @@ const title = computed(() => (isEdit.value ? '编辑商品' : '新建商品'));
 const m = reactive<any>({
   spuName: '',
   subTitle: '',
-  categoryId: '0',
-  brandId: '0',
+  // 分类 / 品牌 / 划线价都从**空**开始：
+  // 写 '0' 时 el-select 找不到 value=0 的选项，会把原始值 "0" 显示出来（像已经选好了），
+  // 而分类的 '0' 还是个真值 —— `if (!m.categoryId)` 拦不住，不选分类也能提交。
+  categoryId: '',
+  brandId: '',
   deliveryType: 1,
-  originalPrice: 0,
+  originalPrice: '',
   mainImage: '',
   images: [] as string[],
   description: '',
@@ -278,8 +281,10 @@ const specs = reactive<Spec[]>([{ specName: '颜色', specValues: [], draft: '' 
 type SkuRow = {
   specValues: string[];
   skuCode: string;
-  price: number;
-  stock: number;
+  // 允许空串：新行的价格 / 库存从**空**开始。预填 0 看起来像已经填好了，
+  // 而 0 元售价会被校验拦下，用户还得先删掉那个 0 才能输入。提交时空值收敛成 0。
+  price: number | string;
+  stock: number | string;
   image: string;
   enabled: boolean;
 };
@@ -327,7 +332,7 @@ const comboCount = computed(() =>
 function regenerate() {
   const active = activeSpecs.value;
   if (!active.length) {
-    skus.value = [{ specValues: [], skuCode: '', price: 0, stock: 0, image: '', enabled: true }];
+    skus.value = [{ specValues: [], skuCode: '', price: '', stock: '', image: '', enabled: true }];
     return;
   }
 
@@ -348,8 +353,8 @@ function regenerate() {
     return {
       specValues: values,
       skuCode: old?.skuCode ?? '',
-      price: old?.price ?? 0,
-      stock: old?.stock ?? 0,
+      price: old?.price ?? '',
+      stock: old?.stock ?? '',
       image: old?.image ?? '',
       enabled: old?.enabled ?? true,
     };
@@ -437,10 +442,10 @@ async function load() {
     Object.assign(m, {
       spuName: d.spuName ?? '',
       subTitle: d.subTitle ?? '',
-      categoryId: String(d.categoryId ?? '0'),
-      brandId: String(d.brandId ?? '0'),
+      categoryId: String(d.categoryId || ''),
+      brandId: String(d.brandId || ''),
       deliveryType: Number(d.deliveryType ?? 1),
-      originalPrice: Number(d.originalPrice ?? 0),
+      originalPrice: Number(d.originalPrice) > 0 ? Number(d.originalPrice) : '',
       mainImage: d.mainImage ?? '',
       images: parseImages(d.images),
       description: d.description ?? '',
@@ -553,7 +558,7 @@ function cancel() {
 watch(categoryPath, (p) => {
   // 只认选到叶子（第 3 级）的分类：后端会拒绝挂到非叶子分类下，
   // 与其让用户提交后才报错，不如在选择时就拦。
-  m.categoryId = p && p.length ? String(p[p.length - 1]) : '0';
+  m.categoryId = p && p.length ? String(p[p.length - 1]) : '';
 });
 
 onMounted(load);

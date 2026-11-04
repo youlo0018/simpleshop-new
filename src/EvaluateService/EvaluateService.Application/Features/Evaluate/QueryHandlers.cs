@@ -27,7 +27,9 @@ public sealed class QuerySpuEvaluatesHandler
     public async Task<ApiResponse<EvaluatePageResult>> Handle(
         QuerySpuEvaluatesCommand request, CancellationToken ct)
     {
-        var page = await _repo.PageBySpuAsync(request.SpuId, request.SkuId, request.Page, request.PageSize, ct);
+        var page = await _repo.PageBySpuAsync(
+            request.SpuId, request.SkuId, request.Page, request.PageSize, ct,
+            request.HasImage, request.MinStar, request.MaxStar);
 
         var rating = await _repo.AggregateBySpuAsync([request.SpuId], ct);
         var average = rating.TryGetValue(request.SpuId, out var r) ? r.AverageScore : 0m;
@@ -38,6 +40,39 @@ public sealed class QuerySpuEvaluatesHandler
             dtos, page.Total, page.Page, page.PageSize,
             average, EvaluateCalculator.DisplayScore(average),
             rating.TryGetValue(request.SpuId, out var rr) ? rr.Count : 0));
+    }
+}
+
+/// <summary>店铺公开评价列表处理器。</summary>
+public sealed class QueryMerchantEvaluatesHandler
+    : IRequestHandler<QueryMerchantEvaluatesCommand, ApiResponse<EvaluatePageResult>>
+{
+    private readonly IEvaluateRepository _repo;
+
+    /// <summary>构造处理器。</summary>
+    /// <param name="repo">评价仓储。</param>
+    public QueryMerchantEvaluatesHandler(IEvaluateRepository repo) => _repo = repo;
+
+    /// <summary>执行查询。</summary>
+    /// <param name="request">命令。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>分页评价与店铺综合评分。</returns>
+    public async Task<ApiResponse<EvaluatePageResult>> Handle(
+        QueryMerchantEvaluatesCommand request, CancellationToken ct)
+    {
+        var page = await _repo.PageByMerchantAsync(
+            request.MerchantId, request.PlatformId,
+            request.Page, request.PageSize, ct).ConfigureAwait(false);
+        var dtos = await EvaluateAssembler
+            .BuildListAsync(_repo, page.Items, forAdmin: false, ct)
+            .ConfigureAwait(false);
+        var ratings = await _repo.AggregateMerchantRatingsAsync(ct).ConfigureAwait(false);
+        var average = ratings.TryGetValue(request.MerchantId, out var value) ? value : 0m;
+
+        return ApiResults.Ok(new EvaluatePageResult(
+            dtos, page.Total, page.Page, page.PageSize,
+            average, EvaluateCalculator.DisplayScore(average),
+            (int)Math.Min(int.MaxValue, page.Total)));
     }
 }
 

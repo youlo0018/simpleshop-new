@@ -1,195 +1,267 @@
 <template>
-  <view class="page points-page">
-    <AppHeader title="积分中心" subtitle="签到赚积分，下单可抵扣" back />
-    <view class="balance-card">
-      <text class="balance-card__label">可用积分</text>
-      <text class="balance-card__value">{{ balance.available || 0 }}</text>
-      <text class="balance-card__expiring">
-        {{ balance.expiringSoon || 0 }} 积分即将过期
+  <view class="points-page page-shell">
+    <AppHeader title="积分中心" back />
+    <view class="points-hero">
+      <text class="points-hero__label">可用积分</text>
+      <text class="points-hero__value">{{ balance.available || 0 }}</text>
+      <text class="points-hero__frozen">冻结 {{ balance.frozen || 0 }} 积分</text>
+      <text v-if="balance.expiringPoints" class="points-hero__expire">
+        {{ balance.expiringPoints }} 积分将在 {{ balance.expiringAt }} 前过期
       </text>
-      <button class="balance-card__sign" :disabled="signed || signing" @tap="signIn">
-        {{ signed ? '今日已签到' : '每日签到' }}
-      </button>
     </view>
-
-    <view class="panel rule-note">
-      <text>积分抵扣是最后一道优惠：商品原价 → 活动 / 券 → 积分。</text>
-      <text>抵扣上限为应付商品金额的 100%。</text>
-    </view>
-
-    <view class="section-title">积分流水</view>
-    <view class="panel record-list">
-      <view v-for="item in records" :key="item.id" class="record">
+    <view class="sign-card card">
+      <view class="sign-card__head">
         <view>
-          <text class="record__title">{{ item.actionName || item.action }}</text>
-          <text class="record__time">{{ item.createdAt }}</text>
+          <text>连续签到 {{ balance.signInStreak || 0 }} 天</text>
+          <text>下一次签到 +{{ balance.nextSignInReward || 0 }} 积分</text>
         </view>
-        <text class="record__value" :class="{ 'record__value--plus': Number(item.quantity) > 0 }">
-          {{ Number(item.quantity) > 0 ? '+' : '' }}{{ item.quantity }}
-        </text>
+        <button :disabled="balance.signedToday" @click="signIn">{{ balance.signedToday ? '今日已签到' : '签到' }}</button>
       </view>
-      <view v-if="!records.length" class="empty">还没有积分记录</view>
+      <view class="sign-card__days">
+        <view v-for="(reward, index) in balance.signInRewards || []" :key="index" :class="{ active: index < (balance.signInStreak || 0) }">
+          <text>D{{ index + 1 }}</text><text>+{{ reward }}</text>
+        </view>
+      </view>
+    </view>
+    <view class="rule card">
+      <text>积分抵扣规则</text>
+      <text>{{ balance.pointsPerYuan || 0 }} 积分抵扣 1 元，最多抵扣商品应付金额</text>
+    </view>
+    <view class="section-head"><text class="section-title">积分流水</text></view>
+    <view class="records card">
+      <view v-for="record in records" :key="record.id" class="record">
+        <view>
+          <text>{{ record.actionName }}</text>
+          <text>{{ record.bizNo }} · {{ record.createdAt }}</text>
+        </view>
+        <view>
+          <text :class="{ plus: record.quantity > 0, minus: record.quantity < 0 }">{{ record.quantity > 0 ? '+' : '' }}{{ record.quantity }}</text>
+          <text>余额 {{ record.availableAfter }}</text>
+        </view>
+      </view>
+      <EmptyState v-if="!records.length" title="暂无积分流水" icon="wallet" />
     </view>
   </view>
 </template>
 
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app';
-import { reactive, ref } from 'vue';
+import { ref } from 'vue';
+import { onLoad, onReachBottom } from '@dcloudio/uni-app';
 import AppHeader from '@/components/AppHeader.vue';
+import EmptyState from '@/components/EmptyState.vue';
 import { request } from '@/core/http';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
+const balance = ref<any>({});
 const records = ref<any[]>([]);
-const signing = ref(false);
-const signed = ref(false);
-const balance = reactive({
-  available: 0,
-  expiringSoon: 0,
-});
+const page = ref(1);
+const loading = ref(false);
 
-async function load() {
+async function load(reset = true) {
   session.restore();
-  if (!session.profile?.customerId) {
-    uni.navigateTo({ url: '/pages/login/index' });
-    return;
+  if (!session.profile) return;
+  if (reset) {
+    page.value = 1;
+    records.value = [];
   }
-  const customerId = session.profile.customerId;
-  const [balanceData, recordData] = await Promise.all([
-    request<any>('/gateway/points/Balance', {
-      params: { customerId },
-      auth: true,
-      silent: true,
-    }).catch(() => null),
-    request<any[]>('/gateway/points/Records', {
-      params: { customerId, page: 1, pageSize: 20 },
-      auth: true,
-      silent: true,
-    }).catch(() => []),
-  ]);
-  Object.assign(balance, balanceData || {});
-  records.value = recordData || [];
+  loading.value = true;
+  try {
+    const [account, recordList] = await Promise.all([
+      request<any>('/gateway/points/Balance', {
+        params: { customerId: session.profile.customerId },
+      }),
+      request<any[]>('/gateway/points/Records', {
+        params: { customerId: session.profile.customerId, page: page.value, pageSize: 20 },
+      }),
+    ]);
+    balance.value = account;
+    records.value = reset ? recordList : [...records.value, ...recordList];
+  } finally {
+    loading.value = false;
+  }
 }
 
 async function signIn() {
-  if (!session.profile?.customerId || signing.value) return;
-  signing.value = true;
-  try {
-    const result = await request<any>(
-      `/gateway/points/SignIn?customerId=${session.profile.customerId}`,
-      {
-        method: 'POST',
-        data: {},
-      },
-    );
-    signed.value = true;
-    uni.showToast({ title: result?.message || '签到成功', icon: 'success' });
-    await load();
-  } finally {
-    signing.value = false;
-  }
+  await request('/gateway/points/SignIn', {
+    method: 'POST',
+    params: { customerId: session.profile!.customerId },
+  });
+  await load();
 }
 
-onShow(load);
+onLoad(() => load());
+onReachBottom(() => {
+  if (loading.value) return;
+  page.value += 1;
+  load(false);
+});
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.points-page {
-  padding-bottom: 80rpx;
+.points-hero {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  padding: 46rpx 28rpx;
+  margin-top: 20rpx;
+  border-radius: 24rpx;
+  background: linear-gradient(135deg, #e9f2ff, #f6f9ff 55%, #eafaf6);
 }
 
-.balance-card {
-  position: relative;
-  overflow: hidden;
-  padding: $space-5;
-  border-radius: 36rpx;
-  background: linear-gradient(135deg, #0071e3, #55a8ff);
-  color: #fff;
+.points-hero__label {
+  color: #5a6b80;
+  font-size: 23rpx;
 }
 
-.balance-card__label,
-.balance-card__value,
-.balance-card__expiring {
-  display: block;
-}
-
-.balance-card__label {
-  opacity: 0.85;
-  font-size: $font-sub;
-}
-
-.balance-card__value {
-  margin-top: $space-1;
-  font-size: 76rpx;
+.points-hero__value {
+  margin: 8rpx 0;
+  color: #132b46;
+  font-size: 74rpx;
   font-weight: 600;
 }
 
-.balance-card__expiring {
-  margin-top: $space-1;
-  opacity: 0.82;
-  font-size: $font-note;
+.points-hero__frozen,
+.points-hero__expire {
+  color: #65758b;
+  font-size: 22rpx;
 }
 
-.balance-card__sign {
-  position: absolute;
-  right: $space-4;
-  bottom: $space-4;
-  height: 68rpx;
-  padding: 0 $space-4;
-  border-radius: 34rpx;
-  background: #fff;
-  color: $brand;
-  font-size: $font-sub;
-  line-height: 68rpx;
+.points-hero__expire {
+  margin-top: 8rpx;
+  color: $warning;
 }
 
-.rule-note {
+.sign-card,
+.rule,
+.records {
+  padding: 24rpx;
+  margin-top: 20rpx;
+}
+
+.sign-card__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24rpx;
+}
+
+.sign-card__head > view {
   display: flex;
   flex-direction: column;
-  gap: $space-1;
-  margin-top: $space-3;
-  padding: $space-3;
-  color: $text-2;
-  font-size: $font-note;
+  gap: 7rpx;
+  min-width: 0;
 }
 
-.record-list {
-  padding: 0 $space-4;
+.sign-card__head > view text:first-child {
+  font-size: 29rpx;
+  font-weight: 600;
+}
+
+.sign-card__head > view text:last-child {
+  color: $muted;
+  font-size: 22rpx;
+}
+
+.sign-card__head button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 68rpx;
+  justify-self: end;
+  padding: 0 28rpx;
+  margin: 0;
+  border: 0;
+  border-radius: 999rpx;
+  background: $brand;
+  color: #fff;
+  font-size: 24rpx;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.sign-card__head button[disabled] {
+  background: #e9e9ec;
+  color: $muted;
+}
+
+.sign-card__days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8rpx;
+  margin-top: 24rpx;
+}
+
+.sign-card__days view {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 4rpx;
+  padding: 12rpx 2rpx;
+  border-radius: 12rpx;
+  background: #f5f6f8;
+  color: $muted;
+  font-size: 18rpx;
+}
+
+.sign-card__days view.active {
+  background: #eaf2ff;
+  color: $brand;
+}
+
+.rule {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.rule text:first-child {
+  font-size: 27rpx;
+  font-weight: 500;
+}
+
+.rule text:last-child {
+  color: $muted;
+  font-size: 22rpx;
 }
 
 .record {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 104rpx;
-  border-bottom: 1rpx solid $hairline;
+  padding: 20rpx 0;
+  border-top: 1rpx solid $line;
 }
 
-.record:last-child {
-  border-bottom: 0;
+.record:first-child {
+  border-top: 0;
 }
 
-.record__title {
-  display: block;
-  font-size: $font-sub;
+.record view {
+  display: flex;
+  flex-direction: column;
+  gap: 5rpx;
+  font-size: 24rpx;
 }
 
-.record__time {
-  display: block;
-  margin-top: 4rpx;
-  color: $text-3;
-  font-size: $font-note;
+.record view text:last-child {
+  color: $muted;
+  font-size: 20rpx;
 }
 
-.record__value {
-  color: $danger;
-  font-weight: 600;
+.record view:last-child {
+  align-items: flex-end;
 }
 
-.record__value--plus {
+.plus {
   color: $success;
+  font-size: 28rpx;
+}
+
+.minus {
+  color: $price;
+  font-size: 28rpx;
 }
 </style>

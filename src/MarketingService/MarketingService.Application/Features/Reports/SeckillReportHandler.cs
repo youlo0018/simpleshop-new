@@ -20,14 +20,17 @@ public sealed class SeckillReportHandler
 {
     private readonly ISeckillRepository _seckill;
     private readonly IOrderAmountPort _gmv;
+    private readonly IViewCountPort _views;
 
     /// <summary>构造处理器。</summary>
     /// <param name="seckill">秒杀仓储。</param>
     /// <param name="gmv">成交额端口（订单服务）。</param>
-    public SeckillReportHandler(ISeckillRepository seckill, IOrderAmountPort gmv)
+    /// <param name="views">场次 PV 端口（日志服务）。</param>
+    public SeckillReportHandler(ISeckillRepository seckill, IOrderAmountPort gmv, IViewCountPort views)
     {
         _seckill = seckill;
         _gmv = gmv;
+        _views = views;
     }
 
     /// <inheritdoc />
@@ -58,11 +61,22 @@ public sealed class SeckillReportHandler
             })
             .ToList();
 
-        var totalParticipants = withGmv.Sum(a => a.ParticipantCount);
-        var totalSuccess = withGmv.Sum(a => a.GrabSuccessCount);
-        var totalGmv = Math.Round(withGmv.Sum(a => a.Gmv), 2, MidpointRounding.AwayFromZero);
+        // PV 同样一次性按场次批量取，不是每场调一次日志服务。
+        // 日志服务挂了 / ES 没起来时端口返回空字典，报表 PV 显示 0 而不是整页 500。
+        var pvBySession = await _views
+            .CountBySessionAsync(withGmv.Select(a => a.SessionId).ToList(), from, to, ct)
+            .ConfigureAwait(false);
+
+        var withPv = withGmv
+            .Select(a => a with { Pv = pvBySession.GetValueOrDefault(a.SessionId) })
+            .ToList();
+
+        var totalParticipants = withPv.Sum(a => a.ParticipantCount);
+        var totalSuccess = withPv.Sum(a => a.GrabSuccessCount);
+        var totalPv = withPv.Sum(a => a.Pv);
+        var totalGmv = Math.Round(withPv.Sum(a => a.Gmv), 2, MidpointRounding.AwayFromZero);
 
         return ApiResults.Ok(new SeckillReport(
-            withGmv, totalParticipants, totalSuccess, totalGmv));
+            withPv, totalParticipants, totalSuccess, totalPv, totalGmv));
     }
 }

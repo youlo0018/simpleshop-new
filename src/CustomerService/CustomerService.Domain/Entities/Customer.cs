@@ -12,6 +12,17 @@ namespace CustomerService.Domain.Entities;
 [Table(Name = "customer")]
 public class Customer : EntityBase
 {
+    /// <summary>
+    /// 所属平台 Id。
+    /// </summary>
+    /// <remarks>
+    /// 每个平台各自一套客户账号：登录名与手机号只在**平台内**唯一，
+    /// 同一手机号可以在不同平台各注册一个，积分 / 券 / 购物车 / 收藏 / 订单因此天然按平台隔离。
+    /// 0 只用于存量数据回填前的过渡态，正常账号必须有真实平台 Id。
+    /// </remarks>
+    [Column(Name = "platform_id")]
+    public long PlatformId { get; set; }
+
     /// <summary>客户唯一编码，客服与订单检索使用。</summary>
     [Column(Name = "customer_no", StringLength = 64)]
     public string CustomerNo { get; set; } = string.Empty;

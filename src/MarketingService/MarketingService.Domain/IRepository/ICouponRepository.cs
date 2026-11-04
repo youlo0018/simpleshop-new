@@ -236,6 +236,26 @@ public interface ICouponRepository
         int page, int pageSize, string keyword, int status, long platformId,
         CancellationToken ct = default);
 
+    /// <summary>分页查询当前时间可领取的券活动。</summary>
+    /// <param name="page">页码，从 1 起。</param>
+    /// <param name="pageSize">每页条数。</param>
+    /// <param name="platformId">平台 Id，0 表示不限。</param>
+    /// <param name="nowUtc">当前 UTC 时间。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>可领取活动与总数。幂等只读。</returns>
+    Task<(List<CouponActivity> Items, long Total)> PageClaimableActivitiesAsync(
+        int page, int pageSize, long platformId, DateTime nowUtc,
+        CancellationToken ct = default);
+
+    /// <summary>批量统计客户在各券活动下已领取的数量。</summary>
+    /// <param name="customerId">客户 Id，0 表示游客并直接返回空字典。</param>
+    /// <param name="activityIds">券活动 Id 集合。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>活动 Id → 已领数量。幂等只读。</returns>
+    Task<Dictionary<long, int>> CountClaimedByActivitiesAsync(
+        long customerId, IReadOnlyCollection<long> activityIds,
+        CancellationToken ct = default);
+
     /// <summary>新建券活动。</summary>
     /// <param name="activity">待写入的券活动。</param>
     /// <param name="ct">取消令牌。</param>

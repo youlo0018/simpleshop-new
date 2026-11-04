@@ -49,6 +49,17 @@ public interface IRoleRepository
     /// <returns>权限点 Id 列表。幂等只读。</returns>
     Task<List<long>> GetPermissionIdsAsync(long roleId, CancellationToken ct = default);
 
+    /// <summary>批量统计各角色已绑定的权限点数（角色列表用）。</summary>
+    /// <param name="roleIds">角色 Id 集合。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>角色 Id → 权限点数；没有绑定的角色不在结果里（调用方按 0 计）。</returns>
+    /// <remarks>
+    /// 角色列表此前逐个角色查一次权限点（一页 20 个角色 = 20 条查询），
+    /// 这里改成一次 GROUP BY 全部取回。
+    /// </remarks>
+    Task<IReadOnlyDictionary<long, int>> CountPermissionsByRoleAsync(
+        IReadOnlyCollection<long> roleIds, CancellationToken ct = default);
+
     /// <summary>重绑角色权限：先删后插，原子执行。</summary>
     /// <param name="roleId">角色 Id。</param>
     /// <param name="permissionIds">目标权限点 Id 集合，可为空表示清空。</param>

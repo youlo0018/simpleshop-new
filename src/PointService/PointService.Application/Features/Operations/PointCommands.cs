@@ -46,10 +46,15 @@ public record ConsumePointsCommand(
 /// <summary>退款按比例回收积分（向上取整）。</summary>
 /// <param name="CustomerId">客户 Id。</param>
 /// <param name="BizNo">订单号。</param>
+/// <param name="RefundNo">
+/// 退款单号。同一订单的多次部分退款靠它各自幂等与累计；
+/// 幂等键只算订单号的话，第二次之后的退款会被当成重复请求直接丢掉。
+/// </param>
 /// <param name="RefundRatio">退款比例 0~1，整单退款传 1。</param>
 /// <param name="Remark">备注。</param>
 public record RefundPointsCommand(
-    long CustomerId, string BizNo, decimal RefundRatio, string Remark = "") : IRequest<ApiResponse<PointBalance>>;
+    long CustomerId, string BizNo, string RefundNo, decimal RefundRatio, string Remark = "")
+    : IRequest<ApiResponse<PointBalance>>;
 
 /// <summary>按订单发放积分（订单完成时由 OrderService 调用）。</summary>
 /// <param name="CustomerId">客户 Id。</param>
@@ -106,8 +111,27 @@ public record QueryPointRecordsCommand(
 /// <param name="TotalEarned">累计发放。</param>
 /// <param name="TotalUsed">累计消耗。</param>
 /// <param name="AlreadyApplied">本次是否命中幂等（重复请求）。</param>
+/// <param name="PointsPerYuan">抵扣汇率：多少积分抵 1 元。</param>
+/// <param name="ExpiringPoints">未来 30 天内即将过期的积分。</param>
+/// <param name="ExpiringAt">最近一批积分的到期时间（UTC ISO），无即将过期积分时为空串。</param>
+/// <param name="SignInStreak">当前连续签到天数。</param>
+/// <param name="SignedToday">今天是否已签到。</param>
+/// <param name="SignInRewards">连续签到每日奖励档位。</param>
+/// <param name="NextSignInReward">下一次签到可获得的积分。</param>
 public record PointBalance(
-    long CustomerId, long Available, long Frozen, long TotalEarned, long TotalUsed, bool AlreadyApplied);
+    long CustomerId,
+    long Available,
+    long Frozen,
+    long TotalEarned,
+    long TotalUsed,
+    bool AlreadyApplied,
+    long PointsPerYuan = 0,
+    long ExpiringPoints = 0,
+    string ExpiringAt = "",
+    int SignInStreak = 0,
+    bool SignedToday = false,
+    IReadOnlyList<long>? SignInRewards = null,
+    long NextSignInReward = 0);
 
 /// <summary>签到结果。</summary>
 public sealed record PointSignInResult(
@@ -146,6 +170,10 @@ public static class PointValidators
         services.AddScoped<IValidator<EarnByOrderCommand>, EarnByOrderValidator>();
         services.AddScoped<IValidator<ExpirePointsCommand>, ExpirePointsValidator>();
         services.AddScoped<IValidator<QueryPointReportCommand>, PointReportValidator>();
+        // C 端的三条读 / 写入口此前没有校验器（规范：每个写入口与列表查询都要覆盖）
+        services.AddScoped<IValidator<SignInPointsCommand>, SignInPointsValidator>();
+        services.AddScoped<IValidator<QueryPointAccountCommand>, QueryPointAccountValidator>();
+        services.AddScoped<IValidator<QueryPointRecordsCommand>, QueryPointRecordsValidator>();
     }
 
     /// <summary>积分报表校验。</summary>
@@ -219,7 +247,37 @@ public static class PointValidators
         {
             RuleFor(x => x.CustomerId).GreaterThan(0).WithMessage("客户 Id 必须为正数");
             RuleFor(x => x.BizNo).NotEmpty().MaximumLength(64).WithMessage("订单号必填且不超过 64 个字符");
+            RuleFor(x => x.RefundNo).NotEmpty().MaximumLength(64).WithMessage("退款单号必填且不超过 64 个字符");
             RuleFor(x => x.RefundRatio).InclusiveBetween(0.0001m, 1.0m).WithMessage("退款比例必须在 0 ~ 1 之间");
+        }
+    }
+
+    /// <summary>签到校验。</summary>
+    /// <remarks>客户 Id 允许 0：经网关时以令牌里的客户为准（CustomerScope.Require）。</remarks>
+    private sealed class SignInPointsValidator : AbstractValidator<SignInPointsCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public SignInPointsValidator()
+            => RuleFor(x => x.CustomerId).GreaterThanOrEqualTo(0).WithMessage("客户 Id 不正确");
+    }
+
+    /// <summary>积分账户查询校验。</summary>
+    private sealed class QueryPointAccountValidator : AbstractValidator<QueryPointAccountCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryPointAccountValidator()
+            => RuleFor(x => x.CustomerId).GreaterThanOrEqualTo(0).WithMessage("客户 Id 不正确");
+    }
+
+    /// <summary>积分流水分页校验。</summary>
+    private sealed class QueryPointRecordsValidator : AbstractValidator<QueryPointRecordsCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryPointRecordsValidator()
+        {
+            RuleFor(x => x.CustomerId).GreaterThanOrEqualTo(0).WithMessage("客户 Id 不正确");
+            RuleFor(x => x.Page).GreaterThanOrEqualTo(1).WithMessage("页码必须大于等于 1");
+            RuleFor(x => x.PageSize).InclusiveBetween(1, 100).WithMessage("每页条数需为 1-100");
         }
     }
 }

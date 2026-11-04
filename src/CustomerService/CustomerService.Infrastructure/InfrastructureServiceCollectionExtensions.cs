@@ -1,3 +1,4 @@
+using Collaboration.Domain.Infrastructure;
 using CustomerService.Application.Services;
 using CustomerService.Domain.IRepository;
 using CustomerService.Infrastructure.Repository;
@@ -19,10 +20,16 @@ public static class InfrastructureServiceCollectionExtensions
     public static IServiceCollection AddInfrastructure(
         this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddInternalTokenPropagation();
+
         services.AddScoped<ICustomerRepository, CustomerRepository>();
         services.AddScoped<ICustomerAddressRepository, CustomerAddressRepository>();
         services.AddScoped<ICustomerFavoriteRepository, CustomerFavoriteRepository>();
         services.AddScoped<CustomerTokenService>();
+        // 客户会话存储：登录 / 注册写会话键，登出与刷新删键；网关读同一把键做校验
+        services.AddScoped<ICustomerSessionStore, RedisCustomerSessionStore>();
+        services.AddScoped<IPasswordResetCodeStore, RedisPasswordResetCodeStore>();
+        services.AddScoped<IPasswordResetCodeSender, LoggingPasswordResetCodeSender>();
 
         // 注册赠送 +100 积分（BUSINESS.md 13.2）。
         //
@@ -45,7 +52,23 @@ public static class InfrastructureServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(pointUrl.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(10);
-        });
+        }).AddHttpMessageHandler<InternalTokenHandler>();
+
+        // 平台解析：客户账号是平台内账号，注册 / 登录必须先把 platformCode 换成 platformId。
+        // 缺地址直接 fail-fast：猜一个平台会把账号建到错误的租户下，比起不来更糟。
+        var platformUrl = configuration["Services:MerchantPlatformServiceBaseUrl"];
+        if (string.IsNullOrWhiteSpace(platformUrl))
+        {
+            throw new InvalidOperationException(
+                "缺少配置 Services:MerchantPlatformServiceBaseUrl。客户账号是平台内账号，"
+                + "注册 / 登录都要先按 platformCode 解析平台，没有地址就无法落库到正确平台。");
+        }
+
+        services.AddHttpClient<IPlatformDirectoryClient, HttpPlatformDirectoryClient>(client =>
+        {
+            client.BaseAddress = new Uri(platformUrl.TrimEnd('/') + "/");
+            client.Timeout = TimeSpan.FromSeconds(10);
+        }).AddHttpMessageHandler<InternalTokenHandler>();
 
         // 收藏页一次批量取商品摘要（REVIEW.md P2-23）。
         // 没有地址时不 fail-fast：收藏记录本身还在，商品服务地址缺失只会让页面回退成 Id 展示，
@@ -57,7 +80,7 @@ public static class InfrastructureServiceCollectionExtensions
             {
                 client.BaseAddress = new Uri(productUrl.TrimEnd('/') + "/");
                 client.Timeout = TimeSpan.FromSeconds(10);
-            });
+            }).AddHttpMessageHandler<InternalTokenHandler>();
         }
         else
         {

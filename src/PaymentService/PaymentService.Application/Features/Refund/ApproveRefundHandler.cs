@@ -61,8 +61,10 @@ public sealed class ApproveRefundHandler : IRequestHandler<ApproveRefundCommand,
 
         // 审批时**不能**把待审批的算进来：那会把本单自己算进去，
         // 变成「这笔退款永远超过它自己」而永远批不过
-        var refundedItems = await _refunds.ListRefundedItemsAsync(refund.OrderNo, false, ct).ConfigureAwait(false);
-        var alreadyRefunded = refundedItems.Sum(a => a.Amount);
+        // 订单级余额用**主表金额合计**（含运费）：明细只记商品行金额，
+        // 用它比实付会把整单退里那笔运费当成还没退。
+        var alreadyRefunded = await _refunds
+            .SumRefundedAmountAsync(refund.OrderNo, false, ct).ConfigureAwait(false);
 
         if (!RefundRules.WithinRefundableBalance(refund.Amount, order.PayableAmount, alreadyRefunded))
         {
@@ -90,18 +92,23 @@ public sealed class ApproveRefundHandler : IRequestHandler<ApproveRefundCommand,
             .ToList();
 
         var marked = await _orders
-            .MarkRefundedAsync(refund.OrderNo, refund.Amount, lineSnapshots, ct)
+            .MarkRefundedAsync(refund.OrderNo, refund.Amount, refund.RefundNo, lineSnapshots, ct)
             .ConfigureAwait(false);
         if (!marked)
         {
-            // 退款单已转「已退款」但订单没转：这是**不一致状态**，必须显式报错让人来查。
+            // 退款单已转「已退款」但订单侧没落账：这是**不一致状态**。
+            // order_synced 保持 false，ScheduledService 的 refund_order_sync 任务会重放
+            // （订单侧按退款单号幂等，重放不会退两次）；这里同时显式报错让人能看到。
             // 悄悄返回成功会让「钱退了但订单还在」被当成正常，事后很难发现
             _logger.LogError(
-                "退款单 {RefundNo} 已审批，但订单 {OrderNo} 标记已退款失败，需人工核对",
+                "退款单 {RefundNo} 已审批，但订单 {OrderNo} 标记已退款失败，已进入对账重试",
                 refund.RefundNo, refund.OrderNo);
             return ApiResponseFactory.Fail(
-                BaseApiResponseCode.RemoteCallFailed, "退款单已审批，但订单状态更新失败，请联系管理员核对");
+                BaseApiResponseCode.RemoteCallFailed,
+                "退款单已审批，但订单侧入账失败；系统会自动重试，如长时间未恢复请联系管理员");
         }
+
+        await _refunds.MarkOrderSyncedAsync(refund.Id, ct).ConfigureAwait(false);
 
         return ApiResponseFactory.Ok("退款已生效");
     }

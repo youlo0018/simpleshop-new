@@ -3,7 +3,9 @@ using Collaboration.Domain.MediatR;
 using CustomerService.Application.Features.Customer.Address;
 using CustomerService.Application.Features.Customer.Admin;
 using CustomerService.Application.Features.Customer.Favorite;
+using CustomerService.Application.Features.Customer.Internal;
 using CustomerService.Application.Features.Customer.Login;
+using CustomerService.Application.Features.Customer.Password;
 using CustomerService.Application.Features.Customer.Profile;
 using CustomerService.Application.Features.Customer.Register;
 using CustomerService.Infrastructure;
@@ -44,9 +46,13 @@ public static class ApiServiceCollectionExtensions
         services.AddScoped<IValidator<QueryCustomerAddressesCommand>, QueryCustomerAddressesValidator>();
         services.AddScoped<IValidator<CreateCustomerAddressCommand>, CreateCustomerAddressValidator>();
         services.AddScoped<IValidator<UpdateCustomerAddressCommand>, UpdateCustomerAddressValidator>();
+        services.AddScoped<IValidator<DeleteCustomerAddressCommand>, DeleteCustomerAddressValidator>();
+        services.AddScoped<IValidator<SetDefaultCustomerAddressCommand>, SetDefaultCustomerAddressValidator>();
         services.AddScoped<IValidator<QueryCustomerFavoritesCommand>, QueryCustomerFavoritesValidator>();
         services.AddScoped<IValidator<AddCustomerFavoriteCommand>, AddCustomerFavoriteValidator>();
         services.AddScoped<IValidator<RemoveCustomerFavoriteCommand>, RemoveCustomerFavoriteValidator>();
+        PasswordValidators.AddPasswordValidators(services);
+        services.AddScoped<IValidator<BackfillCustomerPlatformCommand>, BackfillCustomerPlatformValidator>();
         CustomerAdminValidators.AddCustomerAdminValidators(services);
 
         services.AddInfrastructure(configuration);

@@ -57,6 +57,8 @@ public sealed class CreateMerchantHandler : IRequestHandler<CreateMerchantComman
             ContactPhone = request.ContactPhone.Trim(),
             Logo = request.Logo.Trim(),
             Description = request.Description.Trim(),
+            ServiceGuarantee = request.ServiceGuarantee.Trim(),
+            DeliveryNote = request.DeliveryNote.Trim(),
             Status = request.Status,
             // 固定待审核：商户资质没过审之前不能对外运营（规格 5.2）
             AuditStatus = MerchantAuditStatuses.Pending,
@@ -253,6 +255,8 @@ public sealed class UpdateMerchantHandler : IRequestHandler<UpdateMerchantComman
         merchant.ContactPhone = request.ContactPhone.Trim();
         merchant.Logo = request.Logo.Trim();
         merchant.Description = request.Description.Trim();
+        merchant.ServiceGuarantee = request.ServiceGuarantee.Trim();
+        merchant.DeliveryNote = request.DeliveryNote.Trim();
         merchant.Status = request.Status;
         merchant.Remark = request.Remark.Trim();
 
@@ -523,7 +527,9 @@ public sealed class QueryMerchantsHandler
             MerchantAssembler.FormatTime(a.CreatedAt),
             a.CreatedByName,
             a.UpdatedAt is null ? string.Empty : MerchantAssembler.FormatTime(a.UpdatedAt.Value),
-            a.OperationName)).ToList();
+            a.OperationName,
+            a.ServiceGuarantee,
+            a.DeliveryNote)).ToList();
 
         return ApiResults.Ok(new PagedMerchantDtos(items, page.Total, page.Page, page.PageSize));
     }
@@ -624,7 +630,9 @@ public sealed class QueryPublicShopsHandler
             a.PlatformId,
             platforms.TryGetValue(a.PlatformId, out var name) ? name : string.Empty,
             // 评分库里存两位小数；0 表示还没有评价，前端按规格显示 5.0
-            a.Rating)).ToList();
+            a.Rating,
+            a.ServiceGuarantee,
+            a.DeliveryNote)).ToList();
 
         return ApiResults.Ok(new PagedPublicShopDtos(items, result.Total, page, pageSize));
     }
@@ -674,6 +682,8 @@ public sealed class QueryPublicShopDetailHandler
             merchant.Description,
             merchant.PlatformId,
             platform?.PlatformName ?? string.Empty,
-            merchant.Rating));
+            merchant.Rating,
+            merchant.ServiceGuarantee,
+            merchant.DeliveryNote));
     }
 }

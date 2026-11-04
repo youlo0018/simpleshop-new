@@ -50,8 +50,7 @@ stop_by_pidfile() {
 
 info "停止前端"
 stop_by_port 5173 "后台管理端"
-stop_by_port 5174 "商城 H5"
-rm -f "$LOG_DIR/web-admin.pid" "$LOG_DIR/web-h5.pid"
+rm -f "$LOG_DIR/web-admin.pid"
 
 info "停止微服务"
 while IFS=$'\t' read -r name port _project; do

@@ -51,6 +51,14 @@ public interface IPlatformRepository
     /// <param name="ct">取消令牌。</param>
     /// <returns>启用平台列表。</returns>
     IReadOnlyList<Platform> ListEnabled(CancellationToken ct = default);
+
+    /// <summary>按 Id 集合取平台的展示名（其它服务列表冗余展示用）。</summary>
+    /// <param name="platformIds">平台 Id 集合，最多 200 个。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(平台 Id, 平台名) 列表；查不到的 Id 不在结果里。</returns>
+    /// <remarks>返回元组而不是实体：调用方是 Api 层，规范要求它不碰领域实体。</remarks>
+    Task<List<(long Id, string Name)>> ListNamesByIdsAsync(
+        IReadOnlyList<long> platformIds, CancellationToken ct = default);
 }
 
 /// <summary>商户仓储。</summary>
@@ -102,6 +110,14 @@ public interface IMerchantRepository
     /// <param name="ct">取消令牌。</param>
     /// <returns>启用商户列表。</returns>
     IReadOnlyList<Merchant> ListEnabledByPlatform(long platformId, CancellationToken ct = default);
+
+    /// <summary>按 Id 集合取商户的展示名（其它服务列表冗余展示用）。</summary>
+    /// <param name="merchantIds">商户 Id 集合，最多 200 个。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(商户 Id, 店铺名) 列表；查不到的 Id 不在结果里。</returns>
+    /// <remarks>返回元组而不是实体：调用方是 Api 层，规范要求它不碰领域实体。</remarks>
+    Task<List<(long Id, string Name)>> ListNamesByIdsAsync(
+        IReadOnlyList<long> merchantIds, CancellationToken ct = default);
 
     /// <summary>分页查商户。</summary>
     /// <param name="filter">过滤条件。</param>

@@ -6,14 +6,22 @@ namespace PaymentService.Application.Features.Refund;
 /// <summary>退款申请的一行。</summary>
 /// <param name="OrderItemId">订单行 Id。</param>
 /// <param name="Amount">该行退款金额，必须大于 0。</param>
-public sealed record RefundItemInput(long OrderItemId, decimal Amount);
+/// <param name="Quantity">
+/// 本次退的件数，0 表示「只退钱、不回补库存」。
+/// <b>必须由调用方明确给出</b>：金额与件数是两个独立口径，
+/// 用整行数量顶替会在部分退款时把没退的货一起放回库存（直接超卖）。
+/// </param>
+public sealed record RefundItemInput(long OrderItemId, decimal Amount, int Quantity = 0);
 
 /// <summary>代客申请退款（后台代客户发起）。</summary>
 /// <param name="OrderId">订单 Id，只读，由订单行带出。</param>
 /// <param name="OrderNo">订单号。</param>
 /// <param name="Items">要退的行与金额。留空表示整单退。</param>
 /// <param name="Reason">退款原因，2~200 字符。</param>
-public record ApplyRefundCommand(long OrderId, string OrderNo, IReadOnlyList<RefundItemInput>? Items, string Reason) : IRequest<ApiResponse<long>>;
+/// <param name="Images">凭证图片 URL，最多 9 张；可空。</param>
+public record ApplyRefundCommand(
+    long OrderId, string OrderNo, IReadOnlyList<RefundItemInput>? Items, string Reason,
+    IReadOnlyList<string>? Images = null) : IRequest<ApiResponse<long>>;
 
 /// <summary>审批通过退款。</summary>
 /// <param name="RefundId">退款单 Id。</param>
@@ -32,10 +40,6 @@ public record ApproveRefundCommand(long RefundId) : IRequest<ApiResponse>;
 public record RejectRefundCommand(long RefundId, string RejectReason) : IRequest<ApiResponse>;
 
 /// <summary>查退款单。</summary>
-/// <param name="Status">状态过滤，0 表示不限。</param>
-/// <param name="OrderNo">订单号过滤，空表示不限。</param>
-/// <param name="Page">页码，从 1 起。</param>
-/// <param name="PageSize">每页条数。</param>
 /// <param name="Status">退款单状态过滤，0 表示不限。</param>
 /// <param name="OrderNo">订单号精确过滤，空表示不限。</param>
 /// <param name="Keyword">退款单号 / 订单号模糊搜索（后台搜索框），空表示不限。</param>
@@ -60,12 +64,17 @@ public record QueryRefundsCommand(
 /// <param name="ApproverName">审批人。</param>
 /// <param name="CreatedAt">申请时间。</param>
 /// <param name="Items">退款明细。</param>
+/// <param name="PlatformName">归属平台名称，后台列表 / 详情直接显示它而不是 Id。</param>
+/// <param name="MerchantName">归属商户名称，后台列表 / 详情直接显示它而不是 Id。</param>
+/// <param name="Images">凭证图片 URL 列表。</param>
+/// <param name="ApprovedAt">审批完成时间（UTC 字符串）；未审批为空串。</param>
 public sealed record RefundDto(
     long RefundId, string RefundNo, long OrderId, string OrderNo, decimal Amount,
     int RefundType, string RefundTypeName, int Status, string StatusName,
     string Reason, string RejectReason, string ApproverName, string CreatedAt,
     IReadOnlyList<RefundItemDto> Items,
-    string PlatformName, string MerchantName);
+    string PlatformName, string MerchantName,
+    IReadOnlyList<string>? Images = null, string ApprovedAt = "");
 
 /// <summary>退款明细视图。</summary>
 /// <param name="OrderItemId">订单行 Id。</param>
@@ -80,3 +89,23 @@ public sealed record RefundItemDto(long OrderItemId, string ProductName, string 
 /// <param name="Page">当前页码。</param>
 /// <param name="PageSize">每页条数。</param>
 public sealed record PagedRefundDtos(IReadOnlyList<RefundDto> Items, long Total, int Page, int PageSize);
+
+/// <summary>客户查自己的退款列表。</summary>
+/// <param name="CustomerId">客户 Id。</param>
+/// <param name="Status">状态过滤：0 全部 / 10 待审批 / 20 已退款 / 90 已拒绝 / 95 已撤销。</param>
+/// <param name="Page">页码。</param>
+/// <param name="PageSize">每页条数。</param>
+public record QueryMyRefundsCommand(
+    long CustomerId, int Status = 0, int Page = 1, int PageSize = 10)
+    : IRequest<ApiResponse<PagedRefundDtos>>;
+
+/// <summary>客户查自己的退款详情。</summary>
+/// <param name="CustomerId">客户 Id。</param>
+/// <param name="RefundId">退款单 Id。</param>
+public record QueryMyRefundDetailCommand(long CustomerId, long RefundId)
+    : IRequest<ApiResponse<RefundDto>>;
+
+/// <summary>客户撤销退款申请（仅待审批可撤销，幂等且无副作用）。</summary>
+/// <param name="CustomerId">客户 Id。</param>
+/// <param name="RefundId">退款单 Id。</param>
+public record CancelMyRefundCommand(long CustomerId, long RefundId) : IRequest<ApiResponse>;

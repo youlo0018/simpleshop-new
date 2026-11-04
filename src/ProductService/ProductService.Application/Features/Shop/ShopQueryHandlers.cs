@@ -1,4 +1,6 @@
 using Collaboration.Domain.Common;
+using Collaboration.Domain.Context;
+using System.Text.Json;
 using ProductService.Application.Services;
 using ProductService.Domain.Entities;
 using ProductService.Domain.IRepository;
@@ -24,14 +26,20 @@ public sealed class QueryShopProductsHandler
 {
     private readonly IProductRepository _products;
     private readonly ShopItemAssembler _assembler;
+    private readonly IMarketingTargetClient _targets;
 
     /// <summary>构造处理器。</summary>
     /// <param name="products">商品仓储。</param>
     /// <param name="assembler">列表项组装器（含到手价计算，与搜索查询共用同一份实现）。</param>
-    public QueryShopProductsHandler(IProductRepository products, ShopItemAssembler assembler)
+    /// <param name="targets">营销商品范围客户端。</param>
+    public QueryShopProductsHandler(
+        IProductRepository products,
+        ShopItemAssembler assembler,
+        IMarketingTargetClient targets)
     {
         _products = products;
         _assembler = assembler;
+        _targets = targets;
     }
 
     /// <summary>执行查询。</summary>
@@ -43,13 +51,23 @@ public sealed class QueryShopProductsHandler
     {
         var page = Math.Max(1, request.Page);
         var pageSize = Math.Clamp(request.PageSize, 1, 50);
+        var target = await ShopTargetResolver.ResolveAsync(
+            _products, _targets, request.ActivityId, request.CouponId, ct)
+            .ConfigureAwait(false);
 
         var filter = new ProductQuery
         {
             Keyword = request.Keyword ?? string.Empty,
+            PlatformId = request.PlatformId,
             CategoryId = request.CategoryId,
+            CategoryIds = request.CategoryIds ?? [],
             BrandId = request.BrandId,
+            BrandIds = request.BrandIds ?? [],
+            MinPrice = request.MinPrice,
+            MaxPrice = request.MaxPrice,
             MerchantId = request.MerchantId,
+            TargetFilterSpecified = target.Specified,
+            ProductIds = target.ProductIds,
 
             // 前台只看「审核通过 + 已上架」，写死在服务端
             AuditStatus = AuditStatuses.Approved,
@@ -59,23 +77,18 @@ public sealed class QueryShopProductsHandler
             {
                 ShopSorts.SalesDesc => ProductSorts.SalesDesc,
                 ShopSorts.Newest => ProductSorts.Newest,
+                ShopSorts.PriceAsc => ProductSorts.PriceAsc,
+                ShopSorts.PriceDesc => ProductSorts.PriceDesc,
                 _ => ProductSorts.Default
             }
         };
 
         var (rows, total) = await _products.QueryPagedAsync(page, pageSize, filter, ct);
 
-        var items = await _assembler.BuildAsync(request.CustomerId, rows, ct);
-
-        // 按到手价排序没法交给 SQL（要跨服务试算），只能在**当页**内排。
-        // 这是已知取舍：这里排出来的只是当前页的相对顺序，
-        // 不是全店最低价在前。真实需求量大时应改为「先试算再整体排序 + 缓存到手价」。
-        if (request.SortBy is ShopSorts.PriceAsc or ShopSorts.PriceDesc)
-        {
-            items = request.SortBy == ShopSorts.PriceAsc
-                ? items.OrderBy(a => a.FinalPrice).ThenBy(a => a.ProductId, StringComparer.Ordinal).ToList()
-                : items.OrderByDescending(a => a.FinalPrice).ThenBy(a => a.ProductId, StringComparer.Ordinal).ToList();
-        }
+        // 公开只读接口：有令牌用令牌客户（不一致直接 403），没有客户上下文一律按游客 ——
+        // 请求体里的 customerId 在匿名路径上不可信（否则能读到别人的券码）。
+        var items = await _assembler.BuildAsync(
+            CustomerScope.ResolvePublic(request.CustomerId), rows, ct);
 
         return ApiResults.Ok(new ShopProductPage(items, total, page, pageSize));
     }
@@ -110,6 +123,8 @@ public sealed class QueryShopProductDetailHandler
     {
         var product = await _products.GetByIdAsync(request.ProductId, ct);
         if (product is null
+            // 平台维度：别的平台的商品与「已下架」回同一个 404，不泄露它存在
+            || (request.PlatformId > 0 && product.PlatformId != request.PlatformId)
             || product.AuditStatus != AuditStatuses.Approved
             || product.Status != ListingStatuses.OnShelf)
         {
@@ -128,7 +143,7 @@ public sealed class QueryShopProductDetailHandler
             // 每个 SKU 单独定价：详情页展示的每个规格的到手价，
             // 必须就是用户选中那个规格下单时的到手价。
             : await _prices.CalculateAsync(
-                request.CustomerId,
+                CustomerScope.ResolvePublic(request.CustomerId),
                 enabled.Select(a => new ShopPriceLine(product.Id, a.Id, a.Price)).ToList(),
                 ct);
 
@@ -168,11 +183,12 @@ public sealed class QueryShopProductDetailHandler
 
         var dto = new ShopProductDetailDto(
             product.Id.ToString(),
+            product.MerchantId.ToString(),
             product.SpuName,
             product.SubTitle,
             product.MainImage,
-            product.Images,
-            product.DetailImages,
+            ParseImageArray(product.Images),
+            ParseImageArray(product.DetailImages),
             product.BrandName,
             product.CategoryName,
             product.DeliveryType,
@@ -182,5 +198,25 @@ public sealed class QueryShopProductDetailHandler
             skuDtos);
 
         return ApiResults.Ok(dto);
+    }
+
+    /// <summary>把商品图集的 JSON 文本解析成 URL 数组。</summary>
+    /// <param name="json">商品实体里的图集 JSON。</param>
+    /// <returns>URL 数组；空或非法 JSON 返回空数组。</returns>
+    /// <remarks>
+    /// 历史脏数据不应让整个商品详情 500：解析失败时图集降级为空，其它字段照常展示。
+    /// </remarks>
+    private static IReadOnlyList<string> ParseImageArray(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 }

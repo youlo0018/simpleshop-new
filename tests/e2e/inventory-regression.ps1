@@ -18,6 +18,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()
@@ -201,14 +219,15 @@ Invoke-Case 'API-INI-030' '🔴 20 个并发请求抢 10 件库存：成功恰�
     $jobs = 1..20 | ForEach-Object {
         $biz = "CONC-$sku3-$_"
         Start-ThreadJob -ScriptBlock {
-            param($url, $s, $b)
+            param($url, $s, $b, $headers)
             try {
                 $r = Invoke-RestMethod -Uri $url -Method Post `
+                    -Headers $headers `
                     -Body (@{ skuId = $s; action = 'lock'; quantity = 1; bizNo = $b } | ConvertTo-Json) `
                     -ContentType 'application/json' -TimeoutSec 30
                 if ($r.success) { 'OK' } else { 'FAIL' }
             } catch { 'FAIL' }
-        } -ArgumentList "$Inventory/internal/inventory/Apply", $sku3, $biz
+        } -ArgumentList "$Inventory/internal/inventory/Apply", $sku3, $biz, $script:internalHeaders
     }
 
     $done = $jobs | Wait-Job -Timeout 90 | Receive-Job
@@ -354,14 +373,14 @@ Invoke-Case 'API-INI-054' '🔴 P0 50 个并发锁 1 件（库存 10）：恰好
     $jobs = 1..50 | ForEach-Object {
         $n = $_
         Start-ThreadJob -ScriptBlock {
-            param($url, $sku, $n)
+            param($url, $sku, $n, $headers)
             try {
-                $r = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' `
+                $r = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -ContentType 'application/json' `
                     -Body (@{ skuId = $sku; action = 'lock'; quantity = 1; bizNo = "conc-$sku-$n"
                         remark = '并发回归'; platformId = 0; merchantId = 0 } | ConvertTo-Json) -TimeoutSec 60
                 if ($r.success) { 'OK' } else { "NO:$($r.code)" }
             } catch { 'ERR' }
-        } -ArgumentList "$Inventory/internal/inventory/Apply", $skuId, $n
+        } -ArgumentList "$Inventory/internal/inventory/Apply", $skuId, $n, $script:internalHeaders
     }
     $done = $jobs | Wait-Job -Timeout 180 | Receive-Job
     $jobs | Remove-Job -Force

@@ -24,6 +24,7 @@
         <el-select v-if="!isMerchant" v-model="page" class="head__page" @change="load">
           <el-option value="index" label="首页" />
           <el-option value="profile" label="我的" />
+          <el-option value="mall" label="商城页" />
         </el-select>
         <span v-else class="head__page head__page--fixed">店铺页</span>
         <!--
@@ -90,7 +91,49 @@
       <aside class="props">
         <p class="props__title">组件属性</p>
 
-        <p v-if="!selected" class="props__empty">
+        <div v-if="!isMerchant" class="tabbar-editor">
+          <p class="props__name">底部导航</p>
+          <div v-for="(tab, index) in tabBarItems" :key="index" class="tabbar-editor__row">
+            <el-select v-model="tab.pagePath" placeholder="页面">
+              <el-option label="首页" value="pages/index/index" />
+              <el-option label="分类" value="pages/category/index" />
+              <el-option label="购物车" value="pages/cart/index" />
+              <el-option label="我的" value="pages/profile/index" />
+              <el-option label="商城" value="pages/mall/index" />
+            </el-select>
+            <el-input v-model="tab.text" placeholder="文案" />
+            <ImageUploader v-model="tab.iconPath" hint="建议 81×81 PNG" />
+            <el-button text type="danger" @click="removeTabBarItem(index)">删除</el-button>
+          </div>
+          <el-button
+            class="list-editor__add"
+            :disabled="tabBarItems.length >= 5"
+            @click="addTabBarItem"
+          >添加 Tab</el-button>
+        </div>
+
+        <template v-if="page === 'mall'">
+          <p class="props__name">商城页 Tab</p>
+          <el-form label-position="top" class="props__form">
+            <el-form-item label="默认 Tab">
+              <el-select v-model="defaultMallTab" class="props__control">
+                <el-option v-for="tab in mallTabs" :key="tab.key" :value="tab.key" :label="tab.label" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-for="(tab, index) in mallTabs" :key="tab.key" :label="`Tab ${index + 1}`">
+              <div class="mall-tab-editor">
+                <el-input v-model="tab.label" placeholder="文案" />
+                <el-switch v-model="tab.visible" active-text="显示" />
+                <span>
+                  <el-button text :disabled="index === 0" @click="moveMallTab(index, -1)">上移</el-button>
+                  <el-button text :disabled="index === mallTabs.length - 1" @click="moveMallTab(index, 1)">下移</el-button>
+                </span>
+              </div>
+            </el-form-item>
+          </el-form>
+        </template>
+
+        <p v-else-if="!selected" class="props__empty">
           在中间的手机预览里点一个组件，这里就能改它的内容。
         </p>
 
@@ -126,6 +169,88 @@
                 sortable
                 :hint="f.placeholder"
               />
+              <el-select
+                v-else-if="f.kind === 'select'"
+                v-model="selected.props[f.key]"
+                class="props__control"
+                :placeholder="f.placeholder || '请选择'"
+              >
+                <el-option
+                  v-for="option in parseOptions(f.options)"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <el-switch
+                v-else-if="f.kind === 'switch'"
+                v-model="selected.props[f.key]"
+              />
+              <div v-else-if="f.kind === 'jump'" class="list-editor">
+                <el-select v-model="selected.props[`${f.key}Type`]" placeholder="跳转类型">
+                  <el-option
+                    v-for="option in jumpOptions"
+                    :key="option.value"
+                    :label="option.label"
+                    :value="option.value"
+                  />
+                </el-select>
+                <el-input
+                  v-model="selected.props[`${f.key}Value`]"
+                  placeholder="目标 Id 或链接"
+                />
+              </div>
+              <div v-else-if="f.kind === 'list'" class="list-editor">
+                <div
+                  v-for="(row, rowIndex) in ensureList(selected.props[f.key])"
+                  :key="rowIndex"
+                  class="list-editor__row"
+                >
+                  <div class="list-editor__head">
+                    <span>第 {{ rowIndex + 1 }} 项</span>
+                    <span>
+                      <el-button text :disabled="rowIndex === 0" @click="moveItem(f, rowIndex, -1)">上移</el-button>
+                      <el-button text :disabled="rowIndex === ensureList(selected.props[f.key]).length - 1" @click="moveItem(f, rowIndex, 1)">下移</el-button>
+                      <el-button text type="danger" @click="removeItem(f, rowIndex)">删除</el-button>
+                    </span>
+                  </div>
+                  <el-form-item
+                    v-for="sub in f.itemProps || []"
+                    :key="sub.key"
+                    :label="sub.label"
+                  >
+                    <ImageUploader
+                      v-if="sub.kind === 'image'"
+                      v-model="row[sub.key]"
+                      :hint="sub.placeholder"
+                    />
+                    <el-select
+                      v-else-if="sub.kind === 'select'"
+                      v-model="row[sub.key]"
+                      class="props__control"
+                    >
+                      <el-option
+                        v-for="option in parseOptions(sub.options)"
+                        :key="option.value"
+                        :label="option.label"
+                        :value="option.value"
+                      />
+                    </el-select>
+                    <el-switch v-else-if="sub.kind === 'switch'" v-model="row[sub.key]" />
+                    <el-input
+                      v-else
+                      v-model="row[sub.key]"
+                      class="props__control"
+                      :placeholder="sub.placeholder"
+                    />
+                  </el-form-item>
+                </div>
+                <el-button
+                  class="list-editor__add"
+                  :disabled="f.max > 0 && ensureList(selected.props[f.key]).length >= f.max"
+                  @click="addItem(f)"
+                >添加一项</el-button>
+              </div>
               <el-input
                 v-else-if="f.kind === 'textarea'"
                 v-model="selected.props[f.key]"
@@ -189,6 +314,13 @@ const dragging = ref<any>(null);
 const library = ref<any[]>([]);
 const warnings = ref<string[]>([]);
 const components = ref<any[]>([]);
+const mallTabs = ref([
+  { key: 'seckill', label: '秒杀', visible: true, sort: 0 },
+  { key: 'recommend', label: '推荐', visible: true, sort: 1 },
+  { key: 'activity', label: '活动', visible: true, sort: 2 },
+]);
+const defaultMallTab = ref('recommend');
+const tabBarItems = ref<any[]>([]);
 
 // 宽度只能是 12 栅格里的这几个值（与后端 DesignComponentRegistry.AllowedSpans 一致）。
 // 前端给下拉而不是自由输入：填个 5 会被后端拒，运营还得回头看错误提示。
@@ -206,6 +338,47 @@ const selectedProps = computed(() => {
   if (!type) return [];
   return library.value.find((c: any) => c.type === type)?.props || [];
 });
+
+const jumpOptions = [
+  { value: 'none', label: '不跳转' },
+  { value: 'product', label: '商品' },
+  { value: 'category', label: '分类' },
+  { value: 'activity', label: '活动' },
+  { value: 'shop', label: '店铺' },
+  { value: 'mall', label: '商城页' },
+  { value: 'url', label: '链接' },
+];
+
+function parseOptions(raw?: string[]) {
+  return (raw || []).map((item) => {
+    const [value, ...label] = item.split(':');
+    return { value, label: label.join(':') || value };
+  });
+}
+
+function ensureList(value: any): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function addItem(field: any) {
+  if (!selected.value) return;
+  if (!Array.isArray(selected.value.props[field.key])) selected.value.props[field.key] = [];
+  selected.value.props[field.key].push({});
+}
+
+function removeItem(field: any, index: number) {
+  if (!selected.value) return;
+  selected.value.props[field.key].splice(index, 1);
+}
+
+function moveItem(field: any, index: number, delta: number) {
+  if (!selected.value) return;
+  const list = selected.value.props[field.key];
+  const target = index + delta;
+  if (!Array.isArray(list) || target < 0 || target >= list.length) return;
+  const [item] = list.splice(index, 1);
+  list.splice(target, 0, item);
+}
 
 function selectComponent(i: number) {
   selectedIndex.value = i;
@@ -239,11 +412,25 @@ function onDrop() {
   dragOver.value = false;
   const c = dragging.value;
   if (!c) return;
-  components.value.push({ id: nextId(), type: c.type, span: 12, height: 80, props: {} });
+  const component = { id: nextId(), type: c.type, span: 12, height: 80, props: {} as any };
+  initializeProps(component);
+  components.value.push(component);
   // 拖进来就选中：运营的下一步一定是「把它的字和图片改成我要的」，
   // 让他在预览里再点一下是多余的一步。
   selectedIndex.value = components.value.length - 1;
   dragging.value = null;
+}
+
+function initializeProps(component: any) {
+  const schema = library.value.find((item: any) => item.type === component.type)?.props || [];
+  for (const field of schema) {
+    if (field.kind === 'list' && !Array.isArray(component.props[field.key])) {
+      component.props[field.key] = [];
+    }
+    if (field.kind === 'switch' && typeof component.props[field.key] !== 'boolean') {
+      component.props[field.key] = true;
+    }
+  }
 }
 
 function onReorder(target: number) {
@@ -283,10 +470,30 @@ function nameOf(type: string) {
   return library.value.find((c: any) => c.type === type)?.name || type;
 }
 
+function moveMallTab(index: number, delta: number) {
+  const target = index + delta;
+  if (target < 0 || target >= mallTabs.value.length) return;
+  const [item] = mallTabs.value.splice(index, 1);
+  mallTabs.value.splice(target, 0, item);
+}
+
+function addTabBarItem() {
+  tabBarItems.value.push({ pagePath: 'pages/index/index', text: '首页', iconPath: '' });
+}
+
+function removeTabBarItem(index: number) {
+  tabBarItems.value.splice(index, 1);
+}
+
 function buildConfig(): string {
   // 只提交当前编辑的这一页，后端会把其它页原样保留 ——
   // 整份提交的话，切到「我的」页存草稿会把「首页」的排版覆盖掉。
-  return JSON.stringify({ pages: { [page.value]: { components: components.value } } });
+  return JSON.stringify({
+    pages: { [page.value]: { components: components.value } },
+    mallTabs: mallTabs.value.map((tab, index) => ({ ...tab, sort: index })),
+    defaultMallTab: defaultMallTab.value,
+    tabBar: isMerchant.value ? undefined : tabBarItems.value,
+  });
 }
 
 function parseConfig(json?: string): any {
@@ -326,6 +533,22 @@ async function load() {
 
     warnings.value = res?.warnings || [];
     const cfg = parseConfig(res?.configJson);
+    if (Array.isArray(cfg?.mallTabs) && cfg.mallTabs.length) {
+      mallTabs.value = cfg.mallTabs.map((tab: any, index: number) => ({
+        key: String(tab.key || ['seckill', 'recommend', 'activity'][index] || `tab-${index}`),
+        label: String(tab.label || tab.text || '入口'),
+        visible: tab.visible !== false,
+        sort: Number(tab.sort ?? index),
+      })).sort((a: any, b: any) => a.sort - b.sort);
+    }
+    defaultMallTab.value = String(cfg?.defaultMallTab || 'recommend');
+    tabBarItems.value = Array.isArray(cfg?.tabBar)
+      ? cfg.tabBar.map((tab: any) => ({
+          pagePath: String(tab.pagePath || ''),
+          text: String(tab.text || ''),
+          iconPath: String(tab.iconPath || ''),
+        }))
+      : [];
     const loaded = cfg?.pages?.[page.value]?.components || [];
     // props 缺失 / 不是对象时补空对象：属性面板直接 v-model 到 props[key]，
     // 没有这层兜底，一条历史配置就能让整个面板报错。
@@ -333,6 +556,9 @@ async function load() {
       ...c,
       props: c?.props && typeof c.props === 'object' ? c.props : {},
     }));
+    for (const component of components.value) {
+      initializeProps(component);
+    }
     selectedIndex.value = -1;
   } catch {
     components.value = [];
@@ -381,7 +607,7 @@ async function saveDraft(silent = false) {
 async function publish() {
   // 发布转的是**已存的草稿**，命令里不带配置内容 —— 所以没存草稿就发布等于发布上一版，
   // 运营会以为改上去了。这里先强制存一次草稿。
-  if (!components.value.length) {
+  if (page.value !== 'mall' && !components.value.length) {
     ElMessage.warning('页面是空的，先添加组件再发布');
     return;
   }
@@ -537,6 +763,63 @@ onMounted(load);
   color: var(--text-3);
   font-size: var(--text-note);
   line-height: 1.6;
+}
+
+.list-editor {
+  display: grid;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.list-editor__row {
+  padding: var(--space-3);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.list-editor__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+  color: var(--text-2);
+  font-size: var(--text-foot);
+}
+
+.list-editor__add {
+  width: 100%;
+}
+
+.mall-tab-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+  width: 100%;
+}
+
+.mall-tab-editor > span {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+
+.tabbar-editor {
+  display: grid;
+  gap: var(--space-2);
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-1);
+}
+
+.tabbar-editor__row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
 }
 
 .props__control {

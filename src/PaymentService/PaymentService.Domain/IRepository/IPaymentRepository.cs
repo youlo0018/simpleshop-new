@@ -45,6 +45,17 @@ public interface IPaymentRepository
     /// <returns>数量。</returns>
     Task<int> CountPendingAsync(string orderNo, CancellationToken ct = default);
 
+    /// <summary>取最近仍处于「待支付」的支付单（支付单与订单的对账任务用）。</summary>
+    /// <param name="limit">最多取多少条。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>按创建时间倒序（最近的先查）。</returns>
+    /// <remarks>
+    /// 支付收尾是「先让订单侧置已支付，再改支付单状态」。第二步失败时订单已付、
+    /// 支付单还挂在待支付，报表与后台列表都会把它当成没收钱。
+    /// 只看最近 7 天：更早的待支付单要么已人工处理，要么早该关单，反复扫没有意义。
+    /// </remarks>
+    Task<List<PaymentOrder>> ListPendingForReconcileAsync(int limit, CancellationToken ct = default);
+
     /// <summary>后台分页查支付单。</summary>
     /// <param name="status">状态过滤，0 表示不限。</param>
     /// <param name="keyword">按支付单号 / 订单号模糊匹配。</param>

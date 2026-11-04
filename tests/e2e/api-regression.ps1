@@ -10,6 +10,8 @@
 param(
     [string]$CustomerService = 'http://127.0.0.1:5280',
 [string]$PointService = 'http://127.0.0.1:5082',
+    [string]$MerchantPlatform = 'http://127.0.0.1:5070',
+    [string]$PlatformCode = '',
     [switch]$StopOnFail
 )
 
@@ -45,6 +47,16 @@ function Invoke-Case {
 
 function Get-RandomSuffix { return (Get-Random -Minimum 100000 -Maximum 999999) }
 
+# 客户账号是**平台内账号**：注册 / 登录必须带平台编码。
+# 默认取第一个启用平台，可用 -PlatformCode 指定。
+$script:platformCode = $PlatformCode
+if (-not $script:platformCode) {
+    $platforms = (Invoke-RestMethod "$MerchantPlatform/platforms/Public" -TimeoutSec 20).data
+    if (-not $platforms -or $platforms.Count -eq 0) { throw '没有可用平台，客户注册 / 登录回归无法执行' }
+    $script:platformCode = $platforms[0].platformCode
+}
+Write-Host ("  使用平台编码：" + $script:platformCode) -ForegroundColor DarkGray
+
 Write-Host "`n=== HLT 健康检查 ===" -ForegroundColor Cyan
 
 Invoke-Case 'API-HLT-001' 'CustomerService /health 返回 200' {
@@ -58,7 +70,7 @@ $name1 = "reg_ok_$sfx"
 $phone1 = "139" + $sfx + "01"
 
 Invoke-Case 'API-AUT-010' '注册成功返回令牌' {
-    $body = @{ customerName = $name1; password = 'Test123456'; phone = $phone1; nickName = '回归账号' } | ConvertTo-Json
+    $body = @{ customerName = $name1; password = 'Test123456'; phone = $phone1; nickName = '回归账号'; platformCode = $script:platformCode } | ConvertTo-Json
     $r = Invoke-RestMethod "$CustomerService/customers/Register" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20
     $script:customerId = $r.data.customerId
     return $r.success -and ($r.data.customerId -ne '0') -and ($r.data.token.Length -gt 50)
@@ -79,7 +91,7 @@ Invoke-Case 'API-AUT-010b' '🔴 注册赠送 100 积分真的发到账（BUSINE
 }
 
 Invoke-Case 'API-AUT-011' '同一登录名重复注册被拒' {
-    $body = @{ customerName = $name1; password = 'Test123456'; phone = "138$sfx01" } | ConvertTo-Json
+    $body = @{ customerName = $name1; password = 'Test123456'; phone = "138$sfx01"; platformCode = $script:platformCode } | ConvertTo-Json
     # 重复注册本来就该是 400，Invoke-RestMethod 遇 400 会抛异常，所以这里显式按状态码判定
     try {
         $r = Invoke-RestMethod "$CustomerService/customers/Register" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20
@@ -90,34 +102,34 @@ Invoke-Case 'API-AUT-011' '同一登录名重复注册被拒' {
 }
 
 Invoke-Case 'API-AUT-012' '同一手机号重复注册被拒' {
-    $body = @{ customerName = "reg_dup_$sfx"; password = 'Test123456'; phone = $phone1 } | ConvertTo-Json
+    $body = @{ customerName = "reg_dup_$sfx"; password = 'Test123456'; phone = $phone1; platformCode = $script:platformCode } | ConvertTo-Json
     $r = Invoke-RestMethod "$CustomerService/customers/Register" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20
     return (-not $r.success) -and ($r.code -eq 400)
 }
 
 Invoke-Case 'API-AUT-013' '密码弱校验：短密码被拒' {
-    $body = @{ customerName = "reg_weak_$sfx"; password = '123'; phone = "137$sfx01" } | ConvertTo-Json
+    $body = @{ customerName = "reg_weak_$sfx"; password = '123'; phone = "137$sfx01"; platformCode = $script:platformCode } | ConvertTo-Json
     try { $r = Invoke-RestMethod "$CustomerService/customers/Register" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20 }
     catch { return $true }   # 400 也算通过
     return (-not $r.success)
 }
 
 Invoke-Case 'API-AUT-014' '密码弱校验：无数字被拒' {
-    $body = @{ customerName = "reg_weak2_$sfx"; password = 'abcdefghij'; phone = "136$sfx01" } | ConvertTo-Json
+    $body = @{ customerName = "reg_weak2_$sfx"; password = 'abcdefghij'; phone = "136$sfx01"; platformCode = $script:platformCode } | ConvertTo-Json
     try { $r = Invoke-RestMethod "$CustomerService/customers/Register" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20 }
     catch { return $true }
     return (-not $r.success)
 }
 
 Invoke-Case 'API-AUT-015' '手机号格式错误被拒' {
-    $body = @{ customerName = "reg_phone_$sfx"; password = 'Test123456'; phone = '12345' } | ConvertTo-Json
+    $body = @{ customerName = "reg_phone_$sfx"; password = 'Test123456'; phone = '12345'; platformCode = $script:platformCode } | ConvertTo-Json
     try { $r = Invoke-RestMethod "$CustomerService/customers/Register" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20 }
     catch { return $true }
     return (-not $r.success)
 }
 
 Invoke-Case 'API-AUT-016' '登录名过短被拒' {
-    $body = @{ customerName = 'ab'; password = 'Test123456' } | ConvertTo-Json
+    $body = @{ customerName = 'ab'; password = 'Test123456'; platformCode = $script:platformCode } | ConvertTo-Json
     try { $r = Invoke-RestMethod "$CustomerService/customers/Login" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20 }
     catch { return $true }
     return (-not $r.success)
@@ -126,19 +138,19 @@ Invoke-Case 'API-AUT-016' '登录名过短被拒' {
 Write-Host "`n=== API-AUT-020~026 登录（含关键安全回归）===" -ForegroundColor Cyan
 
 Invoke-Case 'API-AUT-020' '正确密码登录成功' {
-    $body = @{ customerName = $name1; password = 'Test123456' } | ConvertTo-Json
+    $body = @{ customerName = $name1; password = 'Test123456'; platformCode = $script:platformCode } | ConvertTo-Json
     $r = Invoke-RestMethod "$CustomerService/customers/Login" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20
     return $r.success -and ($r.data.customerName -eq $name1)
 }
 
 Invoke-Case 'API-AUT-021' '错误密码被拒' {
-    $body = @{ customerName = $name1; password = 'WrongPass99' } | ConvertTo-Json
+    $body = @{ customerName = $name1; password = 'WrongPass99'; platformCode = $script:platformCode } | ConvertTo-Json
     $r = Invoke-RestMethod "$CustomerService/customers/Login" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20
     return (-not $r.success) -and ($r.code -eq 400)
 }
 
 Invoke-Case 'API-AUT-022' '🔴 安全回归：不存在的账号必须登录失败' {
-    $body = @{ customerName = 'definitely_not_exist_user_zzz'; password = 'Test123456' } | ConvertTo-Json
+    $body = @{ customerName = 'definitely_not_exist_user_zzz'; password = 'Test123456'; platformCode = $script:platformCode } | ConvertTo-Json
     $r = Invoke-RestMethod "$CustomerService/customers/Login" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20
     # 这条锁死一个真实缺陷：ParseExpression 的 Result 会替换整个 WHERE，
     # 导致业务条件 customer_name 被顶掉，返回库里第一条记录，任意账号都能登录成功。
@@ -146,8 +158,8 @@ Invoke-Case 'API-AUT-022' '🔴 安全回归：不存在的账号必须登录失
 }
 
 Invoke-Case 'API-AUT-023' '🔴 安全回归：错误密码与不存在账号返回同一句提示' {
-    $b1 = @{ customerName = $name1; password = 'WrongPass99' } | ConvertTo-Json
-    $b2 = @{ customerName = 'definitely_not_exist_user_zzz'; password = 'WrongPass99' } | ConvertTo-Json
+    $b1 = @{ customerName = $name1; password = 'WrongPass99'; platformCode = $script:platformCode } | ConvertTo-Json
+    $b2 = @{ customerName = 'definitely_not_exist_user_zzz'; password = 'WrongPass99'; platformCode = $script:platformCode } | ConvertTo-Json
     $r1 = Invoke-RestMethod "$CustomerService/customers/Login" -Method Post -Body $b1 -ContentType 'application/json' -TimeoutSec 20
     $r2 = Invoke-RestMethod "$CustomerService/customers/Login" -Method Post -Body $b2 -ContentType 'application/json' -TimeoutSec 20
     # 不泄露账号是否存在
@@ -175,7 +187,7 @@ Invoke-Case 'API-AUT-026' '🔴 审计：同密码两次注册哈希不同（随
     $n2 = "reg_salt2_" + (Get-Random -Minimum 100000 -Maximum 999999)
     # 手机号必须 11 位：3 位前缀 + 6 位随机 + 2 位后缀
     $p2 = "135" + (Get-Random -Minimum 100000 -Maximum 999999) + "77"
-    $b = @{ customerName = $n2; password = 'Test123456'; phone = $p2 } | ConvertTo-Json
+    $b = @{ customerName = $n2; password = 'Test123456'; phone = $p2; platformCode = $script:platformCode } | ConvertTo-Json
     try {
         Invoke-RestMethod "$CustomerService/customers/Register" -Method Post -Body $b -ContentType 'application/json' -TimeoutSec 20 | Out-Null
     } catch {

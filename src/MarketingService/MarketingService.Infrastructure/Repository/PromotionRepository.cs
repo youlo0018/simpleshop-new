@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Collaboration.Domain.Context;
 using Collaboration.Domain.Infrastructure;
 using Collaboration.Domain.Repository;
@@ -22,6 +23,27 @@ namespace MarketingService.Infrastructure.Repository;
 /// </remarks>
 public sealed class PromotionRepository : IPromotionRepository
 {
+    /// <summary>快照缓存条目：某平台的启用活动 + 优惠优先级。</summary>
+    /// <param name="LoadedAt">载入时刻（UTC），用于算 TTL。</param>
+    /// <param name="Activities">该平台启用中的活动（不含时间窗过滤）。</param>
+    /// <param name="Priority">该平台的优惠优先级。</param>
+    private sealed record SnapshotCacheEntry(
+        DateTime LoadedAt, List<PromotionActivity> Activities, int Priority);
+
+    /// <summary>按平台的营销快照缓存。</summary>
+    /// <remarks>
+    /// <para>仓储注册为 Scoped（每个请求一个实例），实例字段存不住东西，所以用静态表；
+    /// 多实例部署时每个进程各有一份，最多差一个 TTL —— 对营销配置可接受。</para>
+    /// <para><b>只缓存「启用中的活动行」，不缓存时间窗</b>：到点生效 / 到点失效由
+    /// <see cref="ListActiveAsync"/> 在内存里按 <c>nowUtc</c> 过滤，活动不会被缓存拖后腿。</para>
+    /// <para>写操作（新建 / 编辑 / 启停 / 删除 / 改优先级）清空整张缓存：
+    /// 后台写操作是低频的，清整表比按平台精确失效更不容易出错。</para>
+    /// </remarks>
+    private static readonly ConcurrentDictionary<long, SnapshotCacheEntry> SnapshotCache = new();
+
+    /// <summary>快照 TTL：与网关 RBAC 缓存同口径（30 秒）。</summary>
+    private static readonly TimeSpan SnapshotTtl = TimeSpan.FromSeconds(30);
+
     private readonly IFreeSql _db;
 
     /// <summary>构造仓储。</summary>
@@ -31,14 +53,53 @@ public sealed class PromotionRepository : IPromotionRepository
     /// <inheritdoc />
     public async Task<List<PromotionActivity>> ListActiveAsync(
         long platformId, long sessionId, DateTime nowUtc, CancellationToken ct = default)
-        => await _db.Select<PromotionActivity>()
-            .Where(a => a.Status == 1
-                        && a.StartTime <= nowUtc
+    {
+        var snapshot = await GetSnapshotAsync(platformId, ct).ConfigureAwait(false);
+
+        // 时间窗在内存里按 nowUtc 过滤（快照里不缓存时间窗），其余条件与原来一致
+        return snapshot.Activities
+            .Where(a => a.StartTime <= nowUtc
                         && a.EndTime >= nowUtc
-                        && (platformId <= 0 || a.PlatformId == platformId)
                         && (sessionId <= 0 || a.SessionId == sessionId))
             .OrderBy(a => a.SortOrder).OrderBy(a => a.Id)
-            .ToListAsync(ct);
+            .ToList();
+    }
+
+    /// <summary>取某平台的营销快照（命中缓存直接返回，过期则重新载入）。</summary>
+    /// <param name="platformId">平台 Id，0 表示不限。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>快照。</returns>
+    /// <remarks>
+    /// 结算页 / 商品列表的到手价试算是全系统调用频次最高的读路径，
+    /// 每次都直接打库既浪费又让活动配置页的写操作与它争连接。
+    /// </remarks>
+    private async Task<SnapshotCacheEntry> GetSnapshotAsync(long platformId, CancellationToken ct)
+    {
+        if (SnapshotCache.TryGetValue(platformId, out var cached)
+            && DateTime.UtcNow - cached.LoadedAt < SnapshotTtl)
+        {
+            return cached;
+        }
+
+        var activities = await _db.Select<PromotionActivity>()
+            .Where(a => a.Status == 1 && (platformId <= 0 || a.PlatformId == platformId))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var config = await _db.Select<MarketingConfig>()
+            .Where(a => a.PlatformId == platformId)
+            .FirstAsync(ct)
+            .ConfigureAwait(false);
+
+        var entry = new SnapshotCacheEntry(
+            DateTime.UtcNow, activities, config?.Priority ?? MarketingPriorities.CouponFirst);
+
+        SnapshotCache[platformId] = entry;
+        return entry;
+    }
+
+    /// <summary>清空快照缓存（任何写操作后调用）。</summary>
+    private static void InvalidateSnapshot() => SnapshotCache.Clear();
 
     /// <inheritdoc />
     public async Task<PromotionActivity?> GetAsync(long activityId, CancellationToken ct = default)
@@ -82,6 +143,8 @@ public sealed class PromotionRepository : IPromotionRepository
         activity.OperationId = ctx.UserId;
         activity.OperationName = ctx.UserName;
         await _db.Insert(activity).ExecuteAffrowsAsync(ct);
+        // 写操作后清快照缓存：下一次读会重新载入（文档「写操作必须 Invalidate」）
+        InvalidateSnapshot();
         return activity.Id;
     }
 
@@ -94,7 +157,7 @@ public sealed class PromotionRepository : IPromotionRepository
         // 操作人字段**只在这里**更新，创建人字段永远不进 SET——
         // 「这个活动是谁建的」一旦被编辑动作覆盖，就再也查不出配置错误是谁引进来的了。
         var ctx = TenantContextHolder.Current;
-        return await _db.Update<PromotionActivity>()
+        var affected = await _db.Update<PromotionActivity>()
             .Where(a => a.Id == activity.Id)
             .Set(a => new PromotionActivity
             {
@@ -118,13 +181,17 @@ public sealed class PromotionRepository : IPromotionRepository
                 UpdatedAt = DateTime.UtcNow
             })
             .ExecuteAffrowsAsync(ct);
+
+        // 编辑会改范围 / 时间 / 状态，快照必须失效（文档「写操作必须 Invalidate」）
+        if (affected > 0) InvalidateSnapshot();
+        return affected;
     }
 
     /// <inheritdoc />
     public async Task<int> SetStatusAsync(long activityId, int status, CancellationToken ct = default)
     {
         var ctx = TenantContextHolder.Current;
-        return await _db.Update<PromotionActivity>()
+        var affected = await _db.Update<PromotionActivity>()
             .Where(a => a.Id == activityId)
             .Set(a => new PromotionActivity
             {
@@ -134,27 +201,67 @@ public sealed class PromotionRepository : IPromotionRepository
                 UpdatedAt = DateTime.UtcNow
             })
             .ExecuteAffrowsAsync(ct);
+
+        if (affected > 0) InvalidateSnapshot();
+        return affected;
     }
 
     /// <inheritdoc />
     public async Task<int> GetPriorityAsync(long platformId, CancellationToken ct = default)
+        // 优先级也在同一份快照里：试算每次都要读它，单独查一次库不值当
+        => (await GetSnapshotAsync(platformId, ct).ConfigureAwait(false)).Priority;
+
+    /// <inheritdoc />
+    public async Task<MarketingConfig?> GetConfigAsync(long platformId, CancellationToken ct = default)
+        => await _db.Select<MarketingConfig>()
+            .Where(a => a.PlatformId == platformId)
+            .FirstAsync(ct);
+
+    /// <inheritdoc />
+    public async Task SavePriorityAsync(long platformId, int priority, CancellationToken ct = default)
     {
         var row = await _db.Select<MarketingConfig>()
             .Where(a => a.PlatformId == platformId)
             .FirstAsync(ct);
 
-        return row?.Priority ?? MarketingPriorities.CouponFirst;
+        if (row is null)
+        {
+            await _db.Insert(new MarketingConfig
+            {
+                Id = SnowflakeId.NewId(),
+                CreatedAt = DateTime.UtcNow,
+                PlatformId = platformId,
+                Priority = priority
+            }).ExecuteAffrowsAsync(ct).ConfigureAwait(false);
+            InvalidateSnapshot();
+            return;
+        }
+
+        // 用 Where + Set 而不是 Update<T>(entity)：后者在本项目已确认会生成空 SET 子句、
+        // 一条 SQL 都不发就返回 0（见 CrudRepository 的 P0 修复说明）
+        await _db.Update<MarketingConfig>()
+            .Where(a => a.Id == row.Id)
+            .Set(a => new MarketingConfig { Priority = priority, UpdatedAt = DateTime.UtcNow })
+            .ExecuteAffrowsAsync(ct).ConfigureAwait(false);
+
+        // 优先级是试算的输入，改完必须让快照失效
+        InvalidateSnapshot();
     }
 
     /// <inheritdoc />
     public async Task<int> SoftDeleteAsync(long activityId, CancellationToken ct = default)
-        => await _db.Update<PromotionActivity>()
+    {
+        var affected = await _db.Update<PromotionActivity>()
             .Where(a => a.Id == activityId)
             .Set(a => new PromotionActivity
             {
                 IsDeleted = true, DeletedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
             })
             .ExecuteAffrowsAsync(ct);
+
+        if (affected > 0) InvalidateSnapshot();
+        return affected;
+    }
 
     /// <inheritdoc />
     public async Task<bool> RecordParticipationAsync(

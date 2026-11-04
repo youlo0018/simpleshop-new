@@ -37,7 +37,11 @@ public static class ServiceCollectionExtensions
             client.Timeout = TimeSpan.FromSeconds(15);
         });
 
-        services.AddScoped<ILogIndexer>(sp => new ElasticsearchLogIndexer(
+        // 🔴 必须是 Singleton：索引器内部有一个跨请求的攒批队列（短窗口聚合 + _bulk），
+        // Scoped 会让每条消息都新建一个实例，队列里永远只有一条文档，批量形同虚设。
+        // 它自身线程安全（ConcurrentQueue + 后台单循环），并实现 IAsyncDisposable
+        // 在容器关闭时把剩余文档写完。
+        services.AddSingleton<ILogIndexer>(sp => new ElasticsearchLogIndexer(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("es"),
             sp.GetRequiredService<IOptions<LogIndexOptions>>(),
             sp.GetRequiredService<ILogger<ElasticsearchLogIndexer>>()));

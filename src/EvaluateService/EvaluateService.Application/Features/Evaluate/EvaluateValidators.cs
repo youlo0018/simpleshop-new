@@ -17,6 +17,7 @@ public static class EvaluateValidators
     public static void AddEvaluateValidators(IServiceCollection services)
     {
         services.AddScoped<IValidator<QuerySpuEvaluatesCommand>, QuerySpuEvaluatesValidator>();
+        services.AddScoped<IValidator<QueryMerchantEvaluatesCommand>, QueryMerchantEvaluatesValidator>();
         services.AddScoped<IValidator<QueryMyEvaluatesCommand>, QueryMyEvaluatesValidator>();
         services.AddScoped<IValidator<QueryEvaluableCommand>, QueryEvaluableValidator>();
         services.AddScoped<IValidator<PublishEvaluateCommand>, PublishEvaluateValidator>();
@@ -36,6 +37,27 @@ public static class EvaluateValidators
             RuleFor(x => x.SkuId).GreaterThanOrEqualTo(0).WithMessage("规格信息不正确");
             RuleFor(x => x.Page).GreaterThanOrEqualTo(1).WithMessage("页码不正确");
             RuleFor(x => x.PageSize).InclusiveBetween(1, 50).WithMessage("每页条数不正确");
+            RuleFor(x => x.MinStar).InclusiveBetween(0, 5).WithMessage("最低星级不正确");
+            RuleFor(x => x.MaxStar).InclusiveBetween(0, 5).WithMessage("最高星级不正确");
+            // 跨字段规则挂在 MaxStar 这个具体属性上：挂在根对象上错误键会是空串，
+            // 前端拿不到字段名，只能弹全局提示（CODING_STANDARD 陷阱 22）
+            RuleFor(x => x.MaxStar)
+                .Must((command, max) => command.MinStar <= 0 || max <= 0 || max >= command.MinStar)
+                .WithMessage("星级区间不正确");
+        }
+    }
+
+    /// <summary>商户评价分页校验。</summary>
+    private sealed class QueryMerchantEvaluatesValidator
+        : AbstractValidator<QueryMerchantEvaluatesCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public QueryMerchantEvaluatesValidator()
+        {
+            RuleFor(x => x.MerchantId).GreaterThan(0).WithMessage("商户 Id 不正确");
+            RuleFor(x => x.PlatformId).GreaterThanOrEqualTo(0).WithMessage("平台信息不正确");
+            RuleFor(x => x.Page).GreaterThanOrEqualTo(1).WithMessage("页码必须大于 0");
+            RuleFor(x => x.PageSize).InclusiveBetween(1, 50).WithMessage("每页条数必须在 1 ~ 50 之间");
         }
     }
 

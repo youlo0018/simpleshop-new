@@ -41,10 +41,10 @@ public static class ApiServiceCollectionExtensions
     /// <param name="services">服务集合。</param>
     /// <param name="configuration">应用配置。</param>
     /// <remarks>
-    /// 处理器注册成 <b>Scoped</b> 而不是 Singleton：处理器依赖 <c>ILogIndexer</c>，
-    /// 而它包着一个 HttpClient。用 Singleton 会让消费循环这个后台单例
-    /// 一直持有某个 scope 的东西——虽然 HttpClient 本身线程安全，
-    /// 但一旦哪天处理器里加了带 scope 的依赖（比如 DbContext），就会变成 captive dependency。
+    /// 处理器注册成 <b>Scoped</b> 而不是 Singleton：一旦哪天处理器里加了带 scope 的依赖
+    /// （比如 DbContext），Singleton 处理器会把它钉在根作用域上，变成 captive dependency。
+    /// <c>ILogIndexer</c> 自身是 Singleton（内部有跨请求的攒批队列），
+    /// 处理器保持 Scoped 才能安全地再依赖别的 scope 服务。
     /// 消费循环本身是单例，它<b>只持有 handler 的工厂</b>，
     /// 每条消息进来时开一个 scope，处理完就释放。
     /// </remarks>

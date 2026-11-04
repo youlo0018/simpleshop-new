@@ -133,7 +133,8 @@ public sealed class QueryBrandsHandler : IRequestHandler<QueryBrandsCommand, Api
     public async Task<ApiResponse<List<BrandListItem>>> Handle(QueryBrandsCommand request, CancellationToken ct)
     {
         var (items, _) = await _brands.QueryPagedAsync(
-            request.Page, request.PageSize, request.Keyword, request.IncludeDisabled, ct);
+            request.Page, request.PageSize, request.Keyword, request.IncludeDisabled, ct,
+            request.PlatformId);
 
         var list = items
             .Select(a => new BrandListItem(

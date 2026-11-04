@@ -77,13 +77,18 @@ public interface IPointRepository
 
     /// <summary>退款按比例回收，<b>向上取整</b>，退回原发放批次。</summary>
     /// <param name="customerId">客户 Id。</param>
-    /// <param name="bizNo">业务单号。</param>
+    /// <param name="bizNo">业务单号（订单号），用于定位冻结批次并累计同一订单的回收。</param>
+    /// <param name="refundNo">
+    /// 退款单号。同一订单的多次部分退款靠它各自幂等：
+    /// 只用订单号做幂等键会把第二次之后的退款当成重复请求丢掉。
+    /// </param>
     /// <param name="refundRatio">退款比例 0~1。整单退款传 1。</param>
     /// <param name="remark">备注。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>回收结果。</returns>
     Task<PointOutcome> RefundAsync(
-        long customerId, string bizNo, decimal refundRatio, string remark = "", CancellationToken ct = default);
+        long customerId, string bizNo, string refundNo, decimal refundRatio,
+        string remark = "", CancellationToken ct = default);
 
     /// <summary>每日签到发放。按服务端本地日期（Asia/Shanghai）判定当天，7 天一轮，断签清零。</summary>
     /// <param name="customerId">客户 Id。</param>
@@ -101,6 +106,16 @@ public interface IPointRepository
     /// <param name="ct">取消令牌。</param>
     /// <returns>账户或 null。幂等只读。</returns>
     Task<PointAccount?> GetAccountAsync(long customerId, CancellationToken ct = default);
+
+    /// <summary>查询客户在指定时间前到期的积分批次。</summary>
+    /// <param name="customerId">客户 Id。</param>
+    /// <param name="nowUtc">当前 UTC 时间。</param>
+    /// <param name="beforeUtc">到期时间上界（不含）。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>仍有剩余且将在上界前到期的批次，按到期时间升序。</returns>
+    Task<List<PointLot>> ListExpiringLotsAsync(
+        long customerId, DateTime nowUtc, DateTime beforeUtc,
+        CancellationToken ct = default);
 
     /// <summary>分页查询积分流水。</summary>
     /// <param name="customerId">客户 Id。</param>

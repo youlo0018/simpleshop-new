@@ -40,14 +40,14 @@ public sealed class RegionController : ControllerBase
     /// <summary>小程序按平台编码读取地区数据，无需登录。</summary>
     /// <param name="platformCode">平台编码。</param>
     /// <param name="ct">取消令牌。</param>
-    /// <returns>三级地区 JSON；平台自定义优先，否则回落内置默认。</returns>
+    /// <returns>结构化三级地区树；平台自定义优先，否则回落内置默认。</returns>
     /// <remarks>
     /// 这是收货地址三级联动的数据源。小程序没有后台令牌，
     /// 不能调 <c>/regions/Get</c>；平台编码由小程序固定配置锁定，
     /// 只返回地区库，不泄露平台的其他配置。
     /// </remarks>
     [HttpGet("Public")]
-    public async Task<ActionResult<ApiResponse<RegionsResult>>> Public(
+    public async Task<ActionResult<ApiResponse<PublicRegionsResult>>> Public(
         [FromQuery] string platformCode, CancellationToken ct)
     {
         var result = await _mediator.Send(new QueryPublicRegionsCommand(platformCode), ct);

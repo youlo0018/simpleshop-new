@@ -1,68 +1,28 @@
 <template>
-  <view class="page address-form">
+  <view class="address-form page-shell">
     <AppHeader :title="addressId ? '编辑地址' : '新增地址'" back />
-
-    <view class="panel form">
-      <view class="field-row">
-        <text class="field-row__label">收货人</text>
-        <input v-model="form.consigneeName" class="field-row__input" placeholder="请输入收货人姓名" maxlength="64" />
-      </view>
-      <view class="field-row">
-        <text class="field-row__label">手机号</text>
-        <input v-model="form.consigneePhone" class="field-row__input" type="number" maxlength="11" placeholder="请输入手机号" />
-      </view>
-      <picker
-        mode="multiSelector"
-        :range="pickerRange"
-        range-key="name"
-        :value="pickerValue"
-        @columnchange="onColumnChange"
-        @change="onRegionChange"
-      >
-        <view class="field-row">
-          <text class="field-row__label">所在地区</text>
-          <text class="field-row__input" :class="{ 'field-row__input--placeholder': !form.regionPath }">
-            {{ form.regionPath || '请选择省 / 市 / 区' }}
-          </text>
-        </view>
-      </picker>
-      <view class="field-row field-row--area">
-        <text class="field-row__label">详细地址</text>
-        <textarea v-model="form.detailAddress" class="field-row__textarea" placeholder="街道、门牌号、小区、楼栋等" maxlength="255" />
-      </view>
-      <view class="field-row">
-        <text class="field-row__label">标签</text>
-        <input v-model="form.label" class="field-row__input" placeholder="如：家 / 公司（选填）" maxlength="16" />
-      </view>
-      <view class="field-row field-row--switch">
-        <text class="field-row__label">设为默认地址</text>
-        <switch :checked="form.isDefault" color="#0071e3" @change="onDefaultChange" />
-      </view>
+    <view class="form card">
+      <label><text>收货人</text><input v-model="form.consigneeName" placeholder="请输入收货人" /></label>
+      <label><text>手机号</text><input v-model="form.consigneePhone" maxlength="20" placeholder="请输入手机号" /></label>
+      <label><text>所在地区</text><input v-model="form.regionPath" placeholder="省 / 市 / 区" @click="chooseRegion" /></label>
+      <label><text>详细地址</text><textarea v-model="form.detailAddress" maxlength="255" placeholder="街道、门牌号等" /></label>
+      <label><text>标签</text><input v-model="form.label" maxlength="16" placeholder="家 / 公司 / 自定义" /></label>
+      <view class="default-row"><text>设为默认地址</text><switch :checked="form.isDefault" color="#0071e3" @change="setDefault" /></view>
     </view>
-
-    <button class="button-primary address-form__submit" :loading="submitting" @tap="submit">
-      保存地址
-    </button>
+    <button class="btn-primary" :disabled="saving" @click="save">保存</button>
   </view>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { reactive, ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
 import AppHeader from '@/components/AppHeader.vue';
 import { request } from '@/core/http';
-import { getPlatformCode } from '@/core/session-storage';
 import { useSessionStore } from '@/stores/session';
-import { isPhone } from '@/common/validators';
 
 const session = useSessionStore();
 const addressId = ref('');
-const submitting = ref(false);
-const regionData = ref<any[]>([]);
-const provinceIndex = ref(0);
-const cityIndex = ref(0);
-const districtIndex = ref(0);
-
+const saving = ref(false);
 const form = reactive({
   consigneeName: '',
   consigneePhone: '',
@@ -75,234 +35,118 @@ const form = reactive({
   isDefault: false,
 });
 
-const provinces = computed<any[]>(() => regionData.value || []);
-const cities = computed<any[]>(() => provinces.value[provinceIndex.value]?.children || []);
-const districts = computed<any[]>(() => cities.value[cityIndex.value]?.children || []);
-const pickerRange = computed(() => [provinces.value, cities.value, districts.value]);
-const pickerValue = computed(() => [provinceIndex.value, cityIndex.value, districtIndex.value]);
-
-/** 把地区索引编码成短代码；后端只存储，不做行政区划查询。 */
-function codeOf(index: number): string {
-  return String(index + 1).padStart(2, '0');
-}
-
-function syncRegionPath() {
-  const province = provinces.value[provinceIndex.value];
-  const city = cities.value[cityIndex.value];
-  const district = districts.value[districtIndex.value];
-  if (!province || !city || !district) {
-    form.provinceCode = '';
-    form.cityCode = '';
-    form.districtCode = '';
-    form.regionPath = '';
+async function load() {
+  session.restore();
+  if (!addressId.value) {
+    form.consigneeName = session.profile?.nickName || '';
     return;
   }
-
-  form.provinceCode = codeOf(provinceIndex.value);
-  form.cityCode = form.provinceCode + codeOf(cityIndex.value);
-  form.districtCode = form.cityCode + codeOf(districtIndex.value);
-  form.regionPath = `${province.name}/${city.name}/${district.name}`;
+  const result = await request<any>('/gateway/customers/addresses/List', {
+    method: 'POST',
+    data: { customerId: session.profile?.customerId, page: 1, pageSize: 100 },
+  });
+  const item = (result.items || []).find((row: any) => String(row.addressId) === addressId.value);
+  if (item) Object.assign(form, {
+    consigneeName: item.consigneeName,
+    consigneePhone: item.consigneePhone,
+    provinceCode: item.provinceCode,
+    cityCode: item.cityCode,
+    districtCode: item.districtCode,
+    regionPath: item.regionPath,
+    detailAddress: item.detailAddress,
+    label: item.label,
+    isDefault: item.isDefault,
+  });
 }
 
-function onColumnChange(event: any) {
-  const column = Number(event.detail.column);
-  const value = Number(event.detail.value);
-  if (column === 0) {
-    provinceIndex.value = value;
-    cityIndex.value = 0;
-    districtIndex.value = 0;
-  } else if (column === 1) {
-    cityIndex.value = value;
-    districtIndex.value = 0;
-  } else {
-    districtIndex.value = value;
-  }
+function chooseRegion() {
+  uni.showToast({ title: '请按“省/市/区”填写地区', icon: 'none' });
 }
 
-function onRegionChange() {
-  syncRegionPath();
-}
-
-function onDefaultChange(event: any) {
+function setDefault(event: any) {
   form.isDefault = Boolean(event.detail.value);
 }
 
-async function loadRegions() {
-  const data = await request<any>('/gateway/regions/Public', {
-    auth: false,
-    params: { platformCode: getPlatformCode() },
-    silent: true,
-  });
-  const parsed = typeof data?.regionsJson === 'string' ? JSON.parse(data.regionsJson) : data?.regionsJson;
-  regionData.value = Array.isArray(parsed) ? parsed : [];
-}
-
-function locateRegion() {
-  const parts = String(form.regionPath || '').split('/');
-  if (parts.length !== 3) return;
-
-  const p = provinces.value.findIndex((item) => item.name === parts[0]);
-  if (p < 0) return;
-  provinceIndex.value = p;
-
-  const c = cities.value.findIndex((item) => item.name === parts[1]);
-  if (c < 0) return;
-  cityIndex.value = c;
-
-  const d = districts.value.findIndex((item) => item.name === parts[2]);
-  if (d >= 0) districtIndex.value = d;
-}
-
-async function loadExisting() {
-  if (!addressId.value) return;
-  const data = await request<any>('/gateway/customers/addresses/List', {
-    method: 'POST',
-    data: { customerId: session.profile?.customerId, page: 1, pageSize: 100 },
-    silent: true,
-  });
-  const hit = (data?.items || []).find((item: any) => String(item.addressId) === String(addressId.value));
-  if (!hit) {
-    uni.showToast({ title: '地址不存在', icon: 'none' });
+async function save() {
+  if (!form.consigneeName || !form.consigneePhone || !form.regionPath || !form.detailAddress) {
+    uni.showToast({ title: '请完整填写地址', icon: 'none' });
     return;
   }
-
-  form.consigneeName = hit.consigneeName || '';
-  form.consigneePhone = hit.consigneePhone || '';
-  form.provinceCode = hit.provinceCode || '';
-  form.cityCode = hit.cityCode || '';
-  form.districtCode = hit.districtCode || '';
-  form.regionPath = hit.regionPath || '';
-  form.detailAddress = hit.detailAddress || '';
-  form.label = hit.label || '';
-  form.isDefault = Boolean(hit.isDefault);
-  locateRegion();
-}
-
-function validate(): boolean {
-  if (!form.consigneeName.trim()) {
-    uni.showToast({ title: '请填写收货人', icon: 'none' });
-    return false;
-  }
-  if (!isPhone(form.consigneePhone.trim())) {
-    uni.showToast({ title: '手机号格式不正确', icon: 'none' });
-    return false;
-  }
-  if (!form.regionPath) {
-    uni.showToast({ title: '请选择所在地区', icon: 'none' });
-    return false;
-  }
-  if (!form.detailAddress.trim()) {
-    uni.showToast({ title: '请填写详细地址', icon: 'none' });
-    return false;
-  }
-  return true;
-}
-
-async function submit() {
-  if (!validate()) return;
-  submitting.value = true;
+  saving.value = true;
   try {
+    const path = form.regionPath.split('/').map((item) => item.trim());
     const body = {
-      customerId: session.profile?.customerId,
-      addressId: addressId.value || undefined,
-      consigneeName: form.consigneeName.trim(),
-      consigneePhone: form.consigneePhone.trim(),
-      provinceCode: form.provinceCode,
-      cityCode: form.cityCode,
-      districtCode: form.districtCode,
-      regionPath: form.regionPath,
-      detailAddress: form.detailAddress.trim(),
-      isDefault: form.isDefault,
-      label: form.label.trim(),
+      ...form,
+      customerId: session.profile!.customerId,
+      provinceCode: path[0] || form.regionPath,
+      cityCode: path[1] || form.regionPath,
+      districtCode: path[2] || form.regionPath,
     };
-
     if (addressId.value) {
-      await request('/gateway/customers/addresses/Update', { method: 'POST', data: body });
+      await request('/gateway/customers/addresses/Update', {
+        method: 'POST',
+        data: { ...body, addressId: addressId.value },
+      });
     } else {
       await request('/gateway/customers/addresses/Create', { method: 'POST', data: body });
     }
-
     uni.showToast({ title: '已保存', icon: 'success' });
-    setTimeout(() => uni.navigateBack(), 500);
+    setTimeout(() => uni.navigateBack(), 350);
   } finally {
-    submitting.value = false;
+    saving.value = false;
   }
 }
 
-onLoad(async (options) => {
-  session.restore();
-  if (!session.profile?.customerId) {
-    uni.navigateTo({ url: '/pages/login/index' });
-    return;
-  }
-
-  addressId.value = String(options?.addressId || '');
-  await loadRegions();
-  await loadExisting();
-  if (!form.regionPath) syncRegionPath();
+onLoad((query) => {
+  addressId.value = String(query?.id || '');
+  load();
 });
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.address-form {
-  padding-bottom: 180rpx;
-}
-
 .form {
-  padding: 0 $space-4;
+  padding: 24rpx;
+  margin: 20rpx 0 28rpx;
 }
 
-.field-row {
+.form label {
+  display: block;
+  padding: 12rpx 0 22rpx;
+}
+
+.form label > text {
+  display: block;
+  margin-bottom: 10rpx;
+  color: $muted;
+  font-size: 23rpx;
+}
+
+.form input,
+.form textarea {
+  width: 100%;
+  padding: 0 18rpx;
+  border-radius: 12rpx;
+  background: #f5f6f8;
+  font-size: 26rpx;
+}
+
+.form input {
+  height: 82rpx;
+}
+
+.form textarea {
+  height: 150rpx;
+  padding-top: 18rpx;
+}
+
+.default-row {
   display: flex;
   align-items: center;
-  gap: $space-3;
-  min-height: 104rpx;
-  border-bottom: 1rpx solid $hairline;
-}
-
-.field-row:last-child {
-  border-bottom: 0;
-}
-
-.field-row--area {
-  align-items: flex-start;
-  padding: $space-3 0;
-}
-
-.field-row__label {
-  width: 160rpx;
-  flex: none;
-  color: $text-2;
-  font-size: $font-sub;
-}
-
-.field-row__input {
-  flex: 1;
-  min-width: 0;
-  font-size: $font-body;
-}
-
-.field-row__input--placeholder {
-  color: $text-3;
-}
-
-.field-row__textarea {
-  flex: 1;
-  min-height: 140rpx;
-  font-size: $font-body;
-  line-height: 1.5;
-}
-
-.field-row--switch {
   justify-content: space-between;
-}
-
-.address-form__submit {
-  position: fixed;
-  right: $space-4;
-  bottom: calc(env(safe-area-inset-bottom) + $space-4);
-  left: $space-4;
+  min-height: 80rpx;
+  border-top: 1rpx solid $line;
+  font-size: 26rpx;
 }
 </style>

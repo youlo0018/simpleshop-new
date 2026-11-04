@@ -74,3 +74,16 @@ public record QueryDeadLettersCommand(
 /// <summary>重放一条死信。</summary>
 /// <param name="EventId">事件 Id。</param>
 public record ReplayDeadLetterCommand(string EventId) : IRequest<ApiResponse>;
+
+/// <summary>按埋点路径统计秒杀场次 PV（业务服务的报表内部调用）。</summary>
+/// <remarks>
+/// 路径由调用方传入而不是写死在这里：日志服务只认识「路径 + sessionId + 时间」，
+/// 不认识「秒杀」这个业务概念。业务路径改了不需要动日志服务。
+/// </remarks>
+/// <param name="Path">埋点请求的路径（精确匹配，下游服务记录的 Path）。</param>
+/// <param name="SessionIds">要统计的场次 Id 集合。</param>
+/// <param name="From">开始时间 UTC（含）。</param>
+/// <param name="To">结束时间 UTC（不含）。</param>
+public record QueryPvCountBySessionCommand(
+    string Path, IReadOnlyList<long> SessionIds, DateTime From, DateTime To)
+    : IRequest<ApiResponse<IReadOnlyList<SessionPvCount>>>;

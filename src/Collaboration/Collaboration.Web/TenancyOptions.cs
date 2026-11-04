@@ -43,6 +43,9 @@ public sealed class TenancyOptions
         /// <summary>客户唯一编码，仅客户令牌有值。</summary>
         public const string CustomerNo = "X-Claim-CustomerNo";
 
+        /// <summary>客户会话 Id（令牌 jti）：登出 / 刷新用它定位「这一台设备」的会话键。</summary>
+        public const string SessionId = "X-Claim-SessionId";
+
         /// <summary>权限点集合，可重复出现或在单值内用逗号分隔。</summary>
         public const string Permissions = "X-Claim-Permissions";
 

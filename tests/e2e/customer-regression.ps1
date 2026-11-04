@@ -20,6 +20,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()
@@ -45,10 +63,15 @@ function Invoke-Case {
 }
 
 $script:suffix = Get-Random -Minimum 100000 -Maximum 999999
+# 客户账号是平台内账号：注册 / 登录必须带平台编码（取第一个启用平台）
+$script:platformCode = ((Invoke-RestMethod "$Gateway/gateway/platforms/Public" -TimeoutSec 20).data |
+    Select-Object -First 1).platformCode
+if (-not $script:platformCode) { throw '没有可用平台，客户回归无法执行' }
 $script:customerA = 0
 $script:customerB = 0
 $script:tokenA = ''
 $script:tokenB = ''
+$script:phoneA = ''
 $script:address1 = 0
 $script:address2 = 0
 
@@ -58,7 +81,7 @@ function New-Customer([string]$tag, [int]$offset) {
     return Invoke-RestMethod "$Gateway/gateway/customers/Register" -Method Post -ContentType 'application/json' `
         -Body (@{
             customerName = "$tag$($script:suffix)"; password = 'Cus12345678'
-            phone = "138$tail"; nickName = $tag
+            phone = "138$tail"; nickName = $tag; platformCode = $script:platformCode
         } | ConvertTo-Json) -TimeoutSec 30
 }
 
@@ -103,25 +126,67 @@ Invoke-Case 'API-CUS-000' '准备：经网关注册两个客户' {
     $b = New-Customer 'cusB' 7
     $script:customerA = [long]$a.data.customerId
     $script:customerB = [long]$b.data.customerId
+    $script:phoneA = '138' + ([string]$script:suffix).PadLeft(8, '0').Substring(0, 8)
     $script:tokenA = [string]$a.data.token
     $script:tokenB = [string]$b.data.token
     return $script:customerA -gt 0 -and $script:customerB -gt 0 -and $script:customerA -ne $script:customerB
 }
 
+Invoke-Case 'API-CUS-000e' '忘记密码：发送固定验证码并重置成功后可用新密码登录' {
+    $sent = Post-As '/gateway/customers/SendPasswordResetCode' @{
+        platformCode = $script:platformCode; phone = $script:phoneA
+    } ''
+    if (-not $sent.success -or [string]::IsNullOrWhiteSpace($sent.data.debugCode)) {
+        return $false
+    }
+
+    $newPassword = 'NewCus123456'
+    $reset = Post-As '/gateway/customers/ResetPassword' @{
+        platformCode = $script:platformCode
+        phone = $script:phoneA
+        code = $sent.data.debugCode
+        newPassword = $newPassword
+    } ''
+    if (-not $reset.success) { return $false }
+
+    $login = Post-As '/gateway/customers/Login' @{
+        customerName = "cusA$($script:suffix)"
+        password = $newPassword
+        platformCode = $script:platformCode
+    } ''
+    return $login.success -and -not [string]::IsNullOrWhiteSpace($login.data.token)
+}
+
+Invoke-Case 'API-CUS-000f' '修改密码：旧密码校验通过后新密码生效' {
+    $login = Post-As '/gateway/customers/Login' @{
+        customerName = "cusA$($script:suffix)"
+        password = 'NewCus123456'
+        platformCode = $script:platformCode
+    } ''
+    $token = [string]$login.data.token
+    $changed = Post-As '/gateway/customers/ChangePassword' @{
+        customerId = $script:customerA
+        oldPassword = 'NewCus123456'
+        newPassword = 'Cus12345678'
+    } $token
+    return $changed.success
+}
+
 Invoke-Case 'API-CUS-000a' '缺必填字段时 MVC 模型绑定返回中文提示（不再回英文 required）' {
-    $r = Post-As '/gateway/customers/Login' @{ customerName = "cus$($script:suffix)" } ''
+    $r = Post-As '/gateway/customers/Login' @{ customerName = "cus$($script:suffix)"; platformCode = $script:platformCode } ''
     $text = Get-ErrorText $r
     return $r.status -eq 400 -and $text -match '不能为空' -and $text -notmatch 'required'
 }
 
 Invoke-Case 'API-CUS-000b' 'FluentValidation 链式规则的默认文案也是中文' {
-    $r = Post-As '/gateway/customers/Login' @{ customerName = "cus$($script:suffix)"; password = '' } ''
+    $r = Post-As '/gateway/customers/Login' @{ customerName = "cus$($script:suffix)"; password = ''; platformCode = $script:platformCode } ''
     $text = Get-ErrorText $r
     return $r.status -eq 400 -and $text -match '[\u4e00-\u9fa5]' -and $text -notmatch 'required'
 }
 
 Invoke-Case 'API-CUS-000c' '客户令牌可上传评价图片（复用统一上传接口）' {
-    $temp = Join-Path $env:TEMP "simpleshop-customer-upload-$($script:suffix).txt"
+    # GetTempPath 而不是 $env:TEMP：后者在 Linux 上是空的（跨平台回归）
+    $temp = Join-Path ([System.IO.Path]::GetTempPath()) "simpleshop-customer-upload-$($script:suffix).txt"
     Set-Content -LiteralPath $temp -Value 'customer evaluation image placeholder' -Encoding UTF8
     try {
         $r = Invoke-RestMethod "$Gateway/gateway/files/Upload" -Method Post `
@@ -353,6 +418,44 @@ Invoke-Case 'API-CUS-013' '🔴 客户 A 拿 B 的地址 Id 去改 / 删 → 404
     Write-Host ("        改={0} 删={1}" -f $update.code, $delete.code) -ForegroundColor DarkGray
     return (-not $update.success) -and $update.code -eq 404 `
         -and (-not $delete.success) -and $delete.code -eq 404
+}
+
+Write-Host "`n=== CUS 会话：刷新 / 登出（服务端会话键） ===" -ForegroundColor Cyan
+
+Invoke-Case 'API-CUS-014' '🔴 刷新令牌：新令牌可用，旧令牌立刻失效（换发即作废旧会话）' {
+    $refreshed = Post-As '/gateway/customers/Refresh' @{} $script:tokenA
+    if (-not $refreshed.success -or [string]::IsNullOrWhiteSpace($refreshed.data.token)) {
+        Write-Host ("        刷新失败：" + $refreshed.message) -ForegroundColor DarkYellow
+        return $false
+    }
+
+    $withNew = Post-As '/gateway/customers/Profile' @{ customerId = $script:customerA } $refreshed.data.token
+    $withOld = Post-As '/gateway/customers/Profile' @{ customerId = $script:customerA } $script:tokenA
+
+    # 后续用例继续用新令牌
+    $script:tokenA = $refreshed.data.token
+
+    Write-Host ("        新令牌={0} 旧令牌={1}" -f $withNew.status, $withOld.status) -ForegroundColor DarkGray
+    return $withNew.success -and $withOld.status -eq 401
+}
+
+Invoke-Case 'API-CUS-015' '刷新 A 的令牌不影响 B 的会话（一设备一把键）' {
+    # A 刚刷新过，B 的令牌没被碰过：B 必须仍然可用。
+    # 会话键如果按客户而不是按 jti 存，这里会失败 —— 多设备会被互相踢下线。
+    $b = Post-As '/gateway/customers/Profile' @{ customerId = $script:customerB } $script:tokenB
+    return $b.success -eq $true
+}
+
+Invoke-Case 'API-CUS-016' '🔴 登出：服务端删会话，旧令牌立刻 401（不是只清本地）' {
+    $logout = Post-As '/gateway/customers/Logout' @{} $script:tokenB
+    if (-not $logout.success) {
+        Write-Host ("        登出失败：" + $logout.message) -ForegroundColor DarkYellow
+        return $false
+    }
+
+    $after = Post-As '/gateway/customers/Profile' @{ customerId = $script:customerB } $script:tokenB
+    Write-Host ("        登出后访问={0}" -f $after.status) -ForegroundColor DarkGray
+    return $after.status -eq 401
 }
 
 Write-Host "`n=== 汇总 ===" -ForegroundColor Cyan

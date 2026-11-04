@@ -63,6 +63,24 @@ public sealed class RoleRepository : CrudRepository<Role>, IRoleRepository
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<long, int>> CountPermissionsByRoleAsync(
+        IReadOnlyCollection<long> roleIds, CancellationToken ct = default)
+    {
+        if (roleIds.Count == 0) return new Dictionary<long, int>();
+
+        var ids = roleIds.Distinct().ToArray();
+
+        // 一次取回这些角色的绑定行、在内存里分组计数：逐角色查会让一页 20 个角色变成 20 条查询。
+        // 只选 RoleId 一列（与 MerchantRepository.CountGroupByPlatformAsync 同一手法）：
+        // FreeSql 的 GroupBy 翻译在本项目上不可靠，拉整行再分组在几十条数据量级上更省心。
+        var rows = await Db.Select<RolePermission>()
+            .Where(a => ids.Contains(a.RoleId))
+            .ToListAsync(a => a.RoleId, ct);
+
+        return rows.GroupBy(a => a).ToDictionary(g => g.Key, g => g.Count());
+    }
+
+    /// <inheritdoc />
     public Task<int> ReplaceRolePermissionsAsync(long roleId, IReadOnlyCollection<long> permissionIds, CancellationToken ct = default)
     {
         var ids = permissionIds.Distinct().ToArray();

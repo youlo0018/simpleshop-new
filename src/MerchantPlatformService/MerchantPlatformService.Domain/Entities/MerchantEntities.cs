@@ -50,6 +50,38 @@ public class Platform : AdminEntityBase, ITenantRoot
     [Column(Name = "notice", StringLength = 500)]
     public string Notice { get; set; } = string.Empty;
 
+    /// <summary>小程序分享标题。</summary>
+    [Column(Name = "share_title", StringLength = 128)]
+    public string ShareTitle { get; set; } = string.Empty;
+
+    /// <summary>小程序分享图 URL。</summary>
+    [Column(Name = "share_image", StringLength = 512)]
+    public string ShareImage { get; set; } = string.Empty;
+
+    /// <summary>客服微信号。</summary>
+    [Column(Name = "service_wechat", StringLength = 64)]
+    public string ServiceWechat { get; set; } = string.Empty;
+
+    /// <summary>客服电话。</summary>
+    [Column(Name = "service_phone", StringLength = 20)]
+    public string ServicePhone { get; set; } = string.Empty;
+
+    /// <summary>用户协议全文（小程序独立页展示）。</summary>
+    [Column(Name = "user_agreement")]
+    public string UserAgreement { get; set; } = string.Empty;
+
+    /// <summary>隐私政策全文（小程序独立页展示）。</summary>
+    [Column(Name = "privacy_policy")]
+    public string PrivacyPolicy { get; set; } = string.Empty;
+
+    /// <summary>ICP 备案号（「关于我们」页展示）。</summary>
+    [Column(Name = "icp_no", StringLength = 64)]
+    public string IcpNo { get; set; } = string.Empty;
+
+    /// <summary>商城简介（「关于我们」页展示）。</summary>
+    [Column(Name = "mall_intro", StringLength = 1000)]
+    public string MallIntro { get; set; } = string.Empty;
+
     /// <summary>主题色，<c>#RRGGBB</c>。</summary>
     [Column(Name = "primary_color", StringLength = 16)]
     public string PrimaryColor { get; set; } = "#0071e3";
@@ -141,6 +173,14 @@ public class Merchant : AdminEntityBase, IPublicVisible<Merchant>, IMerchantRoot
     /// <summary>店铺简介，C 端店铺页展示。</summary>
     [Column(Name = "description", StringLength = 1000)]
     public string Description { get; set; } = string.Empty;
+
+    /// <summary>服务保障文案（商户级别，商品详情页展示，如「正品保证 / 七天无理由」）。</summary>
+    [Column(Name = "service_guarantee", StringLength = 1000)]
+    public string ServiceGuarantee { get; set; } = string.Empty;
+
+    /// <summary>配送说明文案（商户级别，商品详情页展示）。</summary>
+    [Column(Name = "delivery_note", StringLength = 1000)]
+    public string DeliveryNote { get; set; } = string.Empty;
 
     /// <summary>启停状态，见 <see cref="PlatformStatuses"/>。</summary>
     /// <remarks>

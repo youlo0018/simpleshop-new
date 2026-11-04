@@ -99,6 +99,8 @@ public static class RoleValidators
         services.AddScoped<IValidator<UpdateRoleCommand>, UpdateRoleValidator>();
         services.AddScoped<IValidator<QueryRolesCommand>, QueryRolesValidator>();
         services.AddScoped<IValidator<QueryRoleDetailCommand>, QueryRoleDetailValidator>();
+        services.AddScoped<IValidator<DeleteRoleCommand>, DeleteRoleValidator>();
+        services.AddScoped<IValidator<BindRolePermissionsCommand>, BindRolePermissionsValidator>();
     }
 
     private sealed class CreateRoleValidator : AbstractValidator<CreateRoleCommand>
@@ -139,6 +141,27 @@ public static class RoleValidators
         public QueryRoleDetailValidator()
         {
             RuleFor(x => x.RoleId).GreaterThan(0).WithMessage("角色 Id 必须为正数");
+        }
+    }
+
+    /// <summary>删除角色校验。</summary>
+    private sealed class DeleteRoleValidator : AbstractValidator<DeleteRoleCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public DeleteRoleValidator()
+            => RuleFor(x => x.RoleId).GreaterThan(0).WithMessage("角色 Id 必须为正数");
+    }
+
+    /// <summary>重绑角色权限点校验。</summary>
+    private sealed class BindRolePermissionsValidator : AbstractValidator<BindRolePermissionsCommand>
+    {
+        /// <summary>构造校验器。</summary>
+        public BindRolePermissionsValidator()
+        {
+            RuleFor(x => x.RoleId).GreaterThan(0).WithMessage("角色 Id 必须为正数");
+            // 权限点 Id 全为正；重复项由处理器去重，这里只挡明显非法的输入
+            RuleForEach(x => x.PermissionIds).GreaterThan(0).WithMessage("权限点 Id 必须为正数");
+            RuleFor(x => x.PermissionIds.Count).LessThanOrEqualTo(1000).WithMessage("单次最多重绑 1000 个权限点");
         }
     }
 }

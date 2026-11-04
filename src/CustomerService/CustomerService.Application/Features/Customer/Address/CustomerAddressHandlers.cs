@@ -78,6 +78,14 @@ public sealed class CreateCustomerAddressHandler
 
         var (_, total) = await _addresses.QueryPagedAsync(1, 1, ct).ConfigureAwait(false);
 
+        // 地址数量上限：在插入前判断，超出时明确回业务错误而不是静默截断
+        if (total >= CustomerAddressLimits.MaxPerCustomer)
+        {
+            return ApiResults.Fail<string>(
+                BaseApiResponseCode.BusinessError,
+                $"最多保存 {CustomerAddressLimits.MaxPerCustomer} 个收货地址");
+        }
+
         var address = new CustomerAddress
         {
             ConsigneeName = request.ConsigneeName.Trim(),

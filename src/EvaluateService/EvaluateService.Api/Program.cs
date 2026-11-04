@@ -30,6 +30,8 @@ SnowflakeId.Configure(workerId);
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(redis);
 builder.Services.AddSingleton(_ => redis.GetDatabase(redisOptions.Database));
+// RedisOptions 绑定进 DI：积分发放失败的补偿队列要用 SharedDatabase 取共享库句柄
+builder.Services.Configure<RedisOptions>(builder.Configuration.GetSection(RedisOptions.SectionName));
 
 builder.Services.AddAppFreeSql(
     databaseOptions.Default,

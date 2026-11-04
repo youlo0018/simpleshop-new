@@ -1,4 +1,5 @@
 using Collaboration.Domain.Common;
+using Collaboration.Domain.Infrastructure;
 using InventoryService.Application.Features.Internal;
 using InventoryService.Application.Features.Operations;
 using InventoryService.Domain.IRepository;
@@ -44,6 +45,29 @@ public sealed class InternalInventoryController : ControllerBase
     [HttpPost("Apply")]
     public Task<ApiResponse<StockChangeResult>> Apply([FromBody] ApplyStockCommand command, CancellationToken ct)
         => _mediator.Send(command, ct);
+
+    /// <summary>按幂等键查一条库存流水（秒杀回补前确认「这批货真的划出过」）。</summary>
+    /// <param name="query">SKU Id + 业务单号 + 动作。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>命中的流水；没发生过返回 data = null。</returns>
+    /// <remarks>
+    /// <c>seckill_release</c> 是无条件加法，对从未划出过库存的商品释放会凭空多出库存。
+    /// 秒杀场次的「部分划出后中止」必须靠这条查询逐 SKU 判断该不该还。
+    /// </remarks>
+    [HttpPost("Flows/Get")]
+    public async Task<ApiResponse<StockFlowSnapshot?>> GetFlow(
+        [FromBody] StockFlowQuery query, CancellationToken ct)
+    {
+        var flow = await _stocks
+            .GetFlowAsync(query.SkuId, query.BizNo, query.Action, ct)
+            .ConfigureAwait(false);
+
+        // 显式指定 T：三元表达式推断成 StockFlowSnapshot，与声明的 ApiResponse<StockFlowSnapshot?>
+        // 不匹配会报 CS8619；这里返回的就是「可能为 null」的载荷。
+        return ApiResults.Ok<StockFlowSnapshot?>(flow is null
+            ? null
+            : new StockFlowSnapshot(flow.SkuId, flow.BizNo, flow.Action, flow.Quantity));
+    }
 
     /// <summary>按 SKU Id 集合批量取库存快照。</summary>
     /// <param name="skuIds">SKU Id 集合，逗号分隔。</param>
@@ -135,6 +159,19 @@ public sealed class InternalInventoryController : ControllerBase
 /// <param name="MerchantId">商户 Id，0 表示不限。</param>
 /// <param name="PlatformId">平台 Id，0 表示不限。</param>
 public sealed record LowStockCountQuery(long MerchantId = 0, long PlatformId = 0);
+
+/// <summary>库存流水查询条件。</summary>
+/// <param name="SkuId">SKU Id。</param>
+/// <param name="BizNo">业务单号（幂等键的一部分）。</param>
+/// <param name="Action">动作，见 <c>StockActions</c>。</param>
+public sealed record StockFlowQuery(long SkuId, string BizNo, string Action);
+
+/// <summary>库存流水快照。</summary>
+/// <param name="SkuId">SKU Id。</param>
+/// <param name="BizNo">业务单号。</param>
+/// <param name="Action">动作。</param>
+/// <param name="Quantity">数量（正数，方向由动作决定）。</param>
+public sealed record StockFlowSnapshot(long SkuId, string BizNo, string Action, int Quantity);
 
 /// <summary>预警数结果。</summary>
 /// <param name="Count">低于预警阈值的 SKU 数。</param>

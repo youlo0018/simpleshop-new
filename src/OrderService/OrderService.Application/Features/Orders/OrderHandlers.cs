@@ -95,10 +95,19 @@ public sealed class QueryMyOrdersHandler
     : MediatR.IRequestHandler<QueryMyOrdersCommand, ApiResponse<PagedResult<OrderListItemDto>>>
 {
     private readonly IOrderStore _store;
+    private readonly IProductPort _products;
+    private readonly IPlatformPort _platforms;
 
     /// <summary>构造处理器。</summary>
     /// <param name="store">落单端口。</param>
-    public QueryMyOrdersHandler(IOrderStore store) => _store = store;
+    /// <param name="products">商品端口（批量取订单行主图）。</param>
+    /// <param name="platforms">平台端口（批量取店铺名）。</param>
+    public QueryMyOrdersHandler(IOrderStore store, IProductPort products, IPlatformPort platforms)
+    {
+        _store = store;
+        _products = products;
+        _platforms = platforms;
+    }
 
     /// <summary>执行分页查询。</summary>
     /// <param name="request">查询命令。</param>
@@ -115,15 +124,60 @@ public sealed class QueryMyOrdersHandler
         var aggregates = await _store
             .AggregateItemsAsync(orders.Select(a => a.Id).ToArray(), ct).ConfigureAwait(false);
 
+        // 商品图：一次批量取当页全部 SKU 的权威信息（含 SKU 图）。
+        // 下游失败只降级为空图，不让「我的订单」整页打不开。
+        var skuIds = aggregates.Values.SelectMany(a => a.SkuIds).Distinct().ToArray();
+        IReadOnlyDictionary<long, SkuPriceInfo> prices;
+        try
+        {
+            prices = await _products.GetSkuPricesAsync(skuIds, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            prices = new Dictionary<long, SkuPriceInfo>();
+        }
+
+        // 店铺名：名称是展示字段，端口内部已按「失败降级」处理
+        var names = await _platforms.GetNamesAsync(
+            Array.Empty<long>(),
+            orders.Where(a => a.MerchantId > 0).Select(a => a.MerchantId).Distinct().ToArray(),
+            ct).ConfigureAwait(false);
+
         var items = orders.Select(a =>
         {
             aggregates.TryGetValue(a.Id, out var agg);
+            var images = agg.SkuIds
+                .Select(skuId => prices.TryGetValue(skuId, out var p) ? p.Image : string.Empty)
+                .Where(url => !string.IsNullOrWhiteSpace(url))
+                .Distinct(StringComparer.Ordinal)
+                .Take(3)
+                .ToList();
+
+            var merchantName = a.MerchantId <= 0
+                ? "平台自营"
+                : names.Merchants.TryGetValue(a.MerchantId, out var n) ? n : string.Empty;
+
+            // 含虚拟行时整单按虚拟窗口（20/30）；否则实物 20-50 可退
+            var deliveryTypes = agg.HasVirtual
+                ? new[] { DeliveryTypes.Virtual }
+                : new[] { DeliveryTypes.Express };
+
             return new OrderListItemDto(
                 a.Id, a.OrderNo, a.Status, OrderStatusMachine.NameOf(a.Status),
                 a.PayableAmount, agg.ItemQuantity,
                 agg.FirstProductName ?? string.Empty,
                 a.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
-                a.ReceiverName);
+                a.ReceiverName,
+                merchantName,
+                images,
+                CanPay: a.Status == OrderStatuses.PendingPayment,
+                CanCancel: OrderStatusMachine.CanCancel(a.Status),
+                CanRefund: OrderStatusMachine.CanRefund(a.Status, deliveryTypes),
+                CanConfirmReceipt: OrderStatusMachine.CanConfirmReceipt(a.Status));
         }).ToList();
 
         return ApiResults.Ok(new PagedResult<OrderListItemDto>(
@@ -136,10 +190,20 @@ public sealed class QueryOrderDetailHandler
     : MediatR.IRequestHandler<QueryOrderDetailCommand, ApiResponse<OrderDetailDto>>
 {
     private readonly IOrderStore _store;
+    private readonly IPickupCodeCodec _pickupCodes;
+    private readonly IProductPort _products;
 
     /// <summary>构造处理器。</summary>
     /// <param name="store">落单端口。</param>
-    public QueryOrderDetailHandler(IOrderStore store) => _store = store;
+    /// <param name="pickupCodes">RSA 取货码编解码器（待取货状态下发取货码）。</param>
+    /// <param name="products">商品端口（批量取订单行主图）。</param>
+    public QueryOrderDetailHandler(
+        IOrderStore store, IPickupCodeCodec pickupCodes, IProductPort products)
+    {
+        _store = store;
+        _pickupCodes = pickupCodes;
+        _products = products;
+    }
 
     /// <summary>执行详情查询。</summary>
     /// <param name="request">查询命令。</param>
@@ -161,7 +225,32 @@ public sealed class QueryOrderDetailHandler
 
         var items = await _store.ListItemsAsync(order.Id, ct).ConfigureAwait(false);
 
-        return ApiResults.Ok(OrderDetailAssembler.Build(order, items));
+        // 商品图：下游失败只降级为空图，不让订单详情打不开
+        var imagesBySku = new Dictionary<long, string>();
+        try
+        {
+            var prices = await _products
+                .GetSkuPricesAsync(items.Select(a => a.SkuId).Distinct().ToArray(), ct)
+                .ConfigureAwait(false);
+
+            imagesBySku = prices
+                .Where(a => !string.IsNullOrWhiteSpace(a.Value.Image))
+                .ToDictionary(a => a.Key, a => a.Value.Image);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // 图片是展示字段，取不到时按空串下发
+        }
+
+        var dto = OrderDetailAssembler.Build(order, items, imagesBySku);
+        return ApiResults.Ok(dto with
+        {
+            PickupCode = OrderDetailAssembler.ResolvePickupCode(order, items, _pickupCodes)
+        });
     }
 }
 

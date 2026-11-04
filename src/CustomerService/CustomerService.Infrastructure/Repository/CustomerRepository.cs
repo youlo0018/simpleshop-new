@@ -15,22 +15,54 @@ public sealed class CustomerRepository : CrudRepository<Customer>, ICustomerRepo
     }
 
     /// <inheritdoc />
-    public async Task<Customer?> GetByNameAsync(string customerName, CancellationToken ct = default)
-        => await Db.Select<Customer>().Where(a => a.CustomerName == customerName).FirstAsync(ct);
+    public async Task<Customer?> GetByNameAsync(
+        long platformId, string customerName, CancellationToken ct = default)
+        => await Db.Select<Customer>()
+            .Where(a => a.PlatformId == platformId && a.CustomerName == customerName)
+            .FirstAsync(ct);
 
     /// <inheritdoc />
-    public Task<bool> ExistsByNameAsync(string customerName, CancellationToken ct = default)
-        => Db.Select<Customer>().Where(a => a.CustomerName == customerName).AnyAsync(ct);
+    public async Task<Customer?> GetByPhoneAsync(
+        long platformId, string phone, CancellationToken ct = default)
+        => await Db.Select<Customer>()
+            .Where(a => a.PlatformId == platformId && a.Phone == phone)
+            .FirstAsync(ct);
 
     /// <inheritdoc />
-    public Task<bool> ExistsByPhoneAsync(string phone, CancellationToken ct = default)
-        => Db.Select<Customer>().Where(a => a.Phone == phone).AnyAsync(ct);
+    public Task<bool> ExistsByNameAsync(
+        long platformId, string customerName, CancellationToken ct = default)
+        => Db.Select<Customer>()
+            .Where(a => a.PlatformId == platformId && a.CustomerName == customerName)
+            .AnyAsync(ct);
+
+    /// <inheritdoc />
+    public Task<bool> ExistsByPhoneAsync(
+        long platformId, string phone, CancellationToken ct = default)
+        => Db.Select<Customer>()
+            .Where(a => a.PlatformId == platformId && a.Phone == phone)
+            .AnyAsync(ct);
+
+    /// <inheritdoc />
+    public Task<int> UpdatePasswordAsync(
+        long customerId, string passwordHash, CancellationToken ct = default)
+        => Db.Update<Customer>()
+            .Where(a => a.Id == customerId)
+            .Set(a => new Customer
+            {
+                PasswordHash = passwordHash,
+                UpdatedAt = DateTime.UtcNow
+            })
+            .ExecuteAffrowsAsync(ct);
 
     /// <inheritdoc />
     public async Task<(List<Customer> Items, long Total)> PageForAdminAsync(
-        int status, string keyword, int page, int pageSize, CancellationToken ct = default)
+        int status, long platformId, string keyword, int page, int pageSize,
+        CancellationToken ct = default)
     {
-        var select = Db.Select<Customer>().Where(a => status <= 0 || a.Status == status);
+        var select = Db.Select<Customer>()
+            .Where(a => status <= 0 || a.Status == status)
+            // 超管（platformId = 0）不限；平台账号由调用方传入本平台 Id（AOP 不覆盖客户表）
+            .Where(a => platformId <= 0 || a.PlatformId == platformId);
 
         if (!string.IsNullOrWhiteSpace(keyword))
         {
@@ -59,6 +91,15 @@ public sealed class CustomerRepository : CrudRepository<Customer>, ICustomerRepo
         => await Db.Update<Customer>()
             .Where(a => a.Id == customerId && a.Status == expectedStatus)
             .Set(a => new Customer { Status = newStatus, UpdatedAt = DateTime.UtcNow })
+            .ExecuteAffrowsAsync(ct)
+            .ConfigureAwait(false);
+
+    /// <inheritdoc />
+    public async Task<int> BackfillPlatformAsync(long platformId, CancellationToken ct = default)
+        => await Db.Update<Customer>()
+            // 只动「还没归属」的行：已经属于某个平台的账号不能被误改
+            .Where(a => a.PlatformId == 0)
+            .Set(a => new Customer { PlatformId = platformId, UpdatedAt = DateTime.UtcNow })
             .ExecuteAffrowsAsync(ct)
             .ConfigureAwait(false);
 }

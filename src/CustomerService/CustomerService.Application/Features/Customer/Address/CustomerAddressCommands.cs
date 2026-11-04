@@ -4,6 +4,17 @@ using MediatR;
 
 namespace CustomerService.Application.Features.Customer.Address;
 
+/// <summary>收货地址数量限制。</summary>
+public static class CustomerAddressLimits
+{
+    /// <summary>单客户最多保留的收货地址数。</summary>
+    /// <remarks>
+    /// 地址是短名单而不是无限存储：没有上限时脚本可以刷出成千上万条，
+    /// 结算页的默认地址查询与后台客服检索都会被拖慢。
+    /// </remarks>
+    public const int MaxPerCustomer = 50;
+}
+
 /// <summary>地址视图。</summary>
 /// <param name="AddressId">地址 Id。</param>
 /// <param name="ConsigneeName">收货人。</param>
@@ -158,6 +169,33 @@ public sealed class QueryCustomerAddressesValidator : AbstractValidator<QueryCus
         RuleFor(x => x.CustomerId).GreaterThanOrEqualTo(0).WithMessage("客户信息不正确");
         RuleFor(x => x.Page).GreaterThanOrEqualTo(1).WithMessage("页码必须大于 0");
         RuleFor(x => x.PageSize).InclusiveBetween(1, 100).WithMessage("每页条数必须在 1 ~ 100 之间");
+    }
+}
+
+/// <summary>删地址校验。</summary>
+/// <remarks>
+/// 地址类操作此前只有「新增 / 编辑 / 分页」有校验器，删除与设默认这两条写入口是裸的 ——
+/// 违反「每个写入口必须有 Validator」的规范。参数形状在这里挡住，
+/// 归属（是不是自己的地址）仍由处理器按客户 Id 校验。
+/// </remarks>
+public sealed class DeleteCustomerAddressValidator : AbstractValidator<DeleteCustomerAddressCommand>
+{
+    /// <summary>构造校验器。</summary>
+    public DeleteCustomerAddressValidator()
+    {
+        RuleFor(x => x.CustomerId).GreaterThanOrEqualTo(0).WithMessage("客户信息不正确");
+        RuleFor(x => x.AddressId).GreaterThan(0).WithMessage("地址信息不正确");
+    }
+}
+
+/// <summary>设为默认地址校验。</summary>
+public sealed class SetDefaultCustomerAddressValidator : AbstractValidator<SetDefaultCustomerAddressCommand>
+{
+    /// <summary>构造校验器。</summary>
+    public SetDefaultCustomerAddressValidator()
+    {
+        RuleFor(x => x.CustomerId).GreaterThanOrEqualTo(0).WithMessage("客户信息不正确");
+        RuleFor(x => x.AddressId).GreaterThan(0).WithMessage("地址信息不正确");
     }
 }
 

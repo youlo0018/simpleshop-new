@@ -167,6 +167,14 @@ public sealed class QueryCategoryTreeHandler : IRequestHandler<QueryCategoryTree
     public async Task<ApiResponse<List<CategoryNodeDto>>> Handle(QueryCategoryTreeCommand request, CancellationToken ct)
     {
         var all = await _categories.ListAllAsync(ct);
+
+        // 平台维度：platform_id = 0 是「全平台公共分类」，必须与本平台私有分类一起下发。
+        // 只查本平台会把公共分类整棵树藏掉，前台的分类页会直接空掉。
+        if (request.PlatformId > 0)
+        {
+            all = all.Where(a => a.PlatformId == 0 || a.PlatformId == request.PlatformId).ToList();
+        }
+
         if (!request.IncludeDisabled)
         {
             all = all.Where(a => a.Status == 1).ToList();
@@ -224,6 +232,9 @@ public static class CategoryTreeBuilder
         return Sort(roots);
     }
 
+    /// <summary>按「排序号 → 分类名」递归排序分类树（同级稳定、可复现）。</summary>
+    /// <param name="nodes">同一层的节点。</param>
+    /// <returns>排好序的节点（子节点也递归排好）。</returns>
     private static List<CategoryNodeDto> Sort(List<CategoryNodeDto> nodes)
     {
         var sorted = nodes.OrderBy(a => a.SortOrder).ThenBy(a => a.CategoryName, StringComparer.Ordinal).ToList();

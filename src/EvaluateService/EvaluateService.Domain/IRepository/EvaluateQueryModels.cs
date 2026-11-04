@@ -25,6 +25,7 @@ public sealed record PagedEvaluates(IReadOnlyList<Evaluate> Items, long Total, i
 /// <param name="MerchantId">商户 Id，0 表示不限。</param>
 /// <param name="StarScore">星级，0 表示不限。</param>
 /// <param name="OnlyHidden">true 只看已隐藏，false 不看隐藏。</param>
+/// <param name="Keyword">后台搜索框关键词：商品名 / 评价内容模糊匹配，空表示不限。</param>
 /// <param name="Page">页码，从 1 起。</param>
 /// <param name="PageSize">每页条数。</param>
 public sealed record EvaluateAdminFilter(
@@ -32,7 +33,6 @@ public sealed record EvaluateAdminFilter(
     long MerchantId = 0,
     int StarScore = 0,
     bool OnlyHidden = false,
-    /// <summary>后台搜索框关键词：商品名 / 评价内容模糊匹配，空表示不限。</summary>
     string Keyword = "",
     int Page = 1,
     int PageSize = 20);

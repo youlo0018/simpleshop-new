@@ -45,6 +45,14 @@ public sealed class EventConsumerService : BackgroundService
     /// </remarks>
     private readonly ConcurrentDictionary<string, int> _attempts = new(StringComparer.Ordinal);
 
+    /// <summary>串行化对 <see cref="_channel"/> 的访问。</summary>
+    /// <remarks>
+    /// RabbitMQ.Client 的 <c>IModel</c> **不是线程安全的**，而异步并发派发会让多个回调
+    /// 同时跑。慢的是 ES 写入（不需要串行），真正要串行的只有 ack / nack 这几句
+    /// 帧写入 —— 所以用一把小锁把它们围起来，而不是把整个处理过程串行化。
+    /// </remarks>
+    private readonly SemaphoreSlim _channelGate = new(1, 1);
+
     private IConnection? _connection;
     IModel? _channel;
 
@@ -126,7 +134,15 @@ public sealed class EventConsumerService : BackgroundService
             Port = _mq.Port,
             UserName = _mq.UserName,
             Password = _mq.Password,
-            VirtualHost = _mq.VirtualHost
+            VirtualHost = _mq.VirtualHost,
+
+            // 🔴 异步派发 + 并发度：同步回调里的 GetAwaiter().GetResult() 把每条消息
+            // 钉在一个消费者线程上，吞吐 = 1 ÷ 单条处理时间（日志写 ES 时就是 1 ÷ 写入延迟）。
+            // 打开异步派发并给出并发度后，预取额度内的消息可以并发处理。
+            // 注意 6.x 的 ConsumerDispatchConcurrency 默认是 1，只开 DispatchConsumersAsync
+            // 不调这个值仍然是串行的。
+            DispatchConsumersAsync = true,
+            ConsumerDispatchConcurrency = Math.Clamp(_opt.DispatchConcurrency, 1, 32)
         };
 
         _connection = factory.CreateConnection();
@@ -153,15 +169,15 @@ public sealed class EventConsumerService : BackgroundService
 
         _channel.QueueDeclare(_opt.QueueName, durable: true, exclusive: false, autoDelete: false, args);
 
-        // RabbitMQ.Client 6.x 是同步消费者 API：回调返回后才算这条消息处理完。
-        // 所以这里用 GetAwaiter().GetResult() 把异步处理压成同步——
-        // 直接 fire-and-forget 会让 ack 早于处理完成，崩溃时消息就丢了
-        var consumer = new EventingBasicConsumer(_channel);
-        consumer.Received += (_, e) =>
+        // 异步消费者：回调返回的 Task 完成才算这条消息处理完，ack / nack 都在
+        // OnMessageAsync 内部按结果发。**不能** fire-and-forget —— 那样 ack 会早于
+        // 处理完成，崩溃时消息就丢了。
+        var consumer = new AsyncEventingBasicConsumer(_channel);
+        consumer.Received += async (_, e) =>
         {
             try
             {
-                OnMessageAsync(e, ct).GetAwaiter().GetResult();
+                await OnMessageAsync(e, ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -207,7 +223,7 @@ public sealed class EventConsumerService : BackgroundService
             {
                 // 反序列化失败说明消息本身就是坏的，重试一万次也一样，直接丢死信
                 _logger.LogError("消息反序列化失败，直接丢弃到死信队列");
-                channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+                await BasicNackAsync(channel, ea.DeliveryTag, requeue: false).ConfigureAwait(false);
                 return;
             }
 
@@ -224,7 +240,7 @@ public sealed class EventConsumerService : BackgroundService
             // 处理成功才算数，把计数清掉。
             // 不清的话：同一个 EventId 因为别的原因再次失败时，会被算成「已经试过 N 次」而直接进死信。
             _attempts.TryRemove(envelope.EventId, out _);
-            channel.BasicAck(ea.DeliveryTag, multiple: false);
+            await BasicAckAsync(channel, ea.DeliveryTag).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -249,7 +265,7 @@ public sealed class EventConsumerService : BackgroundService
                     }
                 }
 
-                channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: true);
+                await BasicNackAsync(channel, ea.DeliveryTag, requeue: true).ConfigureAwait(false);
                 return;
             }
 
@@ -260,7 +276,42 @@ public sealed class EventConsumerService : BackgroundService
 
             // 死信必须落好「为什么失败」，再把消息 nack 掉。
             // 顺序反过来的话，nack 之后进程崩了就再也补不回来了。
-            channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+            await BasicNackAsync(channel, ea.DeliveryTag, requeue: false).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>串行化地发 ack。</summary>
+    /// <param name="channel">通道。</param>
+    /// <param name="deliveryTag">投递标签。</param>
+    /// <returns>异步任务。</returns>
+    private async Task BasicAckAsync(IModel channel, ulong deliveryTag)
+    {
+        await _channelGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            channel.BasicAck(deliveryTag, multiple: false);
+        }
+        finally
+        {
+            _channelGate.Release();
+        }
+    }
+
+    /// <summary>串行化地发 nack。</summary>
+    /// <param name="channel">通道。</param>
+    /// <param name="deliveryTag">投递标签。</param>
+    /// <param name="requeue">是否重新入队。</param>
+    /// <returns>异步任务。</returns>
+    private async Task BasicNackAsync(IModel channel, ulong deliveryTag, bool requeue)
+    {
+        await _channelGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            channel.BasicNack(deliveryTag, multiple: false, requeue: requeue);
+        }
+        finally
+        {
+            _channelGate.Release();
         }
     }
 

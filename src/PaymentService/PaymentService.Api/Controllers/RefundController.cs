@@ -34,6 +34,33 @@ public sealed class RefundController : ControllerBase
         [FromBody] ApplyRefundCommand command, CancellationToken ct)
         => _mediator.Send(command, ct);
 
+    /// <summary>客户查自己的退款列表。</summary>
+    /// <param name="command">查询命令。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>退款分页，只含当前客户。</returns>
+    [HttpPost("My")]
+    public Task<ApiResponse<PagedRefundDtos>> My(
+        [FromBody] QueryMyRefundsCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
+    /// <summary>客户查自己的退款详情。</summary>
+    /// <param name="command">查询命令。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>退款详情；不存在或非本人返回 404。</returns>
+    [HttpPost("MyDetail")]
+    public Task<ApiResponse<RefundDto>> MyDetail(
+        [FromBody] QueryMyRefundDetailCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
+    /// <summary>客户撤销退款申请（仅待审批可撤销）。</summary>
+    /// <param name="command">命令。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>成功返回空响应。</returns>
+    [HttpPost("CancelMy")]
+    public Task<ApiResponse> CancelMy(
+        [FromBody] CancelMyRefundCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
     /// <summary>审批通过退款。</summary>
     /// <param name="command">命令。</param>
     /// <param name="ct">取消令牌。</param>

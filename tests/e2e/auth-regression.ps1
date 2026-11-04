@@ -26,6 +26,11 @@ $script:pass = 0
 $script:fail = 0
 $script:failures = @()
 
+# 客户账号是平台内账号：注册必须带平台编码（取第一个启用平台，匿名可调）
+$script:platformCode = ((Invoke-RestMethod "$Gateway/gateway/platforms/Public" -TimeoutSec 20).data |
+    Select-Object -First 1).platformCode
+if (-not $script:platformCode) { throw '没有可用平台，认证回归无法执行' }
+
 function Invoke-Case {
     param([string]$Id, [string]$Name, [scriptblock]$Action)
     try {
@@ -176,6 +181,7 @@ Invoke-Case 'API-ATH-036' '🔴 客户账号不得走后台登录（账号域互
     $name = "cst$phone"
     Invoke-Json "$CustomerService/customers/Register" @{
         customerName = $name; password = 'Test123456'; phone = $phone; nickName = '客户'
+        platformCode = $script:platformCode
     } | Out-Null
     $r = Get-RawToken "grant_type=password&client_id=admin-app&username=$name&password=Test123456"
     return $r.Status -eq 400 -and $r.Body -match 'invalid_grant'

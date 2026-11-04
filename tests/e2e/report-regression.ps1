@@ -19,6 +19,24 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ---- 内部接口口令（服务端口直连 /internal/** 需要） ----
+# 服务端 TenantContextMiddleware 对 /internal/** 做 fail-closed 校验：
+# 没有 X-Internal-Token 一律 401。这里把口令设成 Invoke-RestMethod 的默认头，
+# 避免每个直连内部接口的调用点各写一遍；显式 -Headers 的调用会覆盖默认值，
+# Start-ThreadJob 是独立 runspace、不继承默认值，线程里的内部调用要显式传。
+$script:internalToken = if ($env:SIMPLESHOP_INTERNAL_TOKEN) { $env:SIMPLESHOP_INTERNAL_TOKEN } else {
+    $envFile = Join-Path $PSScriptRoot '..\..\deploy\.env'
+    if (Test-Path $envFile) {
+        ((Get-Content $envFile | Where-Object { $_ -match '^INTERNAL_SERVICE_TOKEN=' } |
+            Select-Object -First 1) -replace '^INTERNAL_SERVICE_TOKEN=', '').Trim()
+    } else { '' }
+}
+$script:internalHeaders = @{ 'X-Internal-Token' = $script:internalToken }
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = $script:internalHeaders
+if (-not $script:internalToken) {
+    Write-Host '注意：未找到内部口令（SIMPLESHOP_INTERNAL_TOKEN / deploy/.env），直连 /internal 的用例会 401' -ForegroundColor Yellow
+}
 $script:pass = 0
 $script:fail = 0
 $script:failures = @()
@@ -429,6 +447,58 @@ Invoke-Case 'API-RPT-058' '🔴 秒杀报表非法档位被 Range 规则挡住' 
         return [int]$_.Exception.Response.StatusCode -eq 400 `
             -and $_.ErrorDetails.Message -match 'Range'
     }
+}
+
+Invoke-Case 'API-RPT-059' '逐场次 PV 字段齐全，且逐场之和等于合计' {
+    $sessions = @($script:skl.data.sessions)
+    if ($sessions.Count -eq 0) { return $true }
+
+    $missing = @($sessions | Where-Object { $null -eq $_.PSObject.Properties['pv'] })
+    if ($missing.Count -gt 0) {
+        Write-Host "        有场次缺 pv 字段" -ForegroundColor DarkYellow
+        return $false
+    }
+
+    $sum = (@($sessions | Measure-Object -Property pv -Sum).Sum)
+    $total = [long]$script:skl.data.totalPv
+    Write-Host ("        逐场 PV 合计 {0} / 合计 {1}" -f $sum, $total) -ForegroundColor DarkGray
+
+    # 逐场之和必须等于合计：两者来自同一份日志聚合，对不上就是有一处算错了。
+    return $sum -eq $total
+}
+
+Invoke-Case 'API-RPT-060' '🔴 埋点后该场次 PV 真的增长（日志服务聚合，不返回假数字）' {
+    $sessions = @($script:skl.data.sessions)
+    if ($sessions.Count -eq 0) {
+        Write-Host "        （没有可验证的场次，跳过）" -ForegroundColor DarkGray
+        return $true
+    }
+
+    $target = $sessions[0]
+    $sid = [long]$target.sessionId
+    $before = [long]$target.pv
+
+    # 模拟小程序进入秒杀频道：同一场次打 3 次曝光（GET + 查询参数）。
+    # 场次 Id 不能放请求体 —— 请求体不进 pv 日志，报表就归因不到。
+    for ($i = 0; $i -lt 3; $i++) {
+        Invoke-RestMethod -Uri "$MarketingService/marketing/seckill/sessions/View?sessionId=$sid" `
+            -TimeoutSec 20 | Out-Null
+    }
+
+    # pv.log 经 RabbitMQ → LogService → ES 才可检索，必须轮询等待而不是查一次就下结论。
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 800
+        $r = SeckillReport 4
+        $row = @($r.data.sessions | Where-Object { [long]$_.sessionId -eq $sid })[0]
+        if ($null -ne $row -and [long]$row.pv -ge ($before + 3)) {
+            Write-Host ("        场次 {0}：PV {1} → {2}" -f $target.sessionId, $before, $row.pv) -ForegroundColor DarkGray
+            return $true
+        }
+    }
+
+    Write-Host ("        30 秒内 PV 没有从 {0} 增长到 {1}" -f $before, ($before + 3)) -ForegroundColor DarkYellow
+    return $false
 }
 
 Write-Host ""

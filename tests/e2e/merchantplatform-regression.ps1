@@ -500,7 +500,10 @@ Invoke-Case 'API-MP-036' '🔴 内置默认是**完整三级**数据（31 省 / 
 
 Invoke-Case 'API-MP-037' '小程序按平台编码读地区库（无需登录）' {
     $r = Invoke-RestMethod "$Gateway/gateway/regions/Public?platformCode=$($script:platformCode)" -TimeoutSec 60
-    return $r.success -and $r.data.regionsJson -match '北京市'
+    # 新契约：返回结构化三级树 { regions, isCustom }，不再返回 JSON 字符串
+    $beijing = @($r.data.regions | Where-Object { $_.name -eq '北京市' })
+    return $r.success -and @($r.data.regions).Count -eq 31 `
+        -and $beijing.Count -eq 1 -and @($beijing[0].children).Count -gt 0
 }
 
 Invoke-Case 'API-MP-038' '平台编码不存在时返回 404（不泄露平台是否存在）' {

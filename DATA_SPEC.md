@@ -165,9 +165,10 @@
 
 | 字段 | 类型 | 列 | 说明 |
 |---|---|---|---|
-| `CustomerName` | `string` | `varchar(64)` | 登录名，唯一 |
+| `PlatformId` | `long` | `bigint` | **所属平台**；客户账号平台内唯一（同一手机号可在不同平台各注册一个）。0 仅用于存量数据回填前的过渡态 |
+| `CustomerName` | `string` | `varchar(64)` | 登录名，**平台内唯一** |
 | `PasswordHash` | `string` | `varchar(256)` | 哈希（与后台账号同一套 PBKDF2 格式，盐在哈希串内，无独立 salt 列） |
-| `Phone` | `string` | `varchar(20)` | 手机号，唯一 |
+| `Phone` | `string` | `varchar(20)` | 手机号，**平台内唯一** |
 | `NickName` | `string` | `varchar(64)` | 昵称（C 端展示） |
 | `Avatar` | `string?` | `varchar(512)` | 头像 |
 | `Gender` | `int` | `integer` | 0 未知 / 1 男 / 2 女 |
@@ -176,12 +177,18 @@
 
 客户账号**与后台账号完全隔离**：不同库、不同登录端点、不同令牌（`BUSINESS.md` 第 4 节）。
 
+客户账号是**平台内账号**：注册 / 登录必须携带 `PlatformCode`（6 位字母），服务端解析成 `PlatformId`
+后再查重与签发令牌；令牌带 `platform_id` 声明，网关注入 `X-Claim-PlatformId`。
+唯一索引是 `(platform_id, customer_name)` 与 `(platform_id, phone)`。
+停用平台禁止登录。
+存量账号（`platform_id = 0`）用内部接口 `POST /internal/customers/backfill-platform` 一次性回填。
+
 **C 端接口（BUSINESS.md 180「注册 / 登录、资料、地址簿、收藏」）**：
 
 | 接口 | 表 | 规则 |
 |---|---|---|
 | `POST /gateway/customers/Profile` / `UpdateProfile` | `customer` | 只改昵称 / 头像 / 性别 / 生日；**登录名与手机号不在这里改**（唯一键 + 需额外验证）。手机号**打码下发**（`138****8000`） |
-| `POST /gateway/customers/addresses/List|Create|Update|Delete|SetDefault` | `customer_address` | 第一条地址自动成为默认；设默认要清掉旧的；删掉默认时剩下最新的一条自动顶上。收货手机号按 `1[3-9]\d{9}` 校验 |
+| `POST /gateway/customers/addresses/List|Create|Update|Delete|SetDefault` | `customer_address` | 第一条地址自动成为默认；设默认要清掉旧的；删掉默认时剩下最新的一条自动顶上。收货手机号按 `1[3-9]\d{9}` 校验；**每客户最多 50 条**，超出返回业务错误 |
 | `POST /gateway/customers/favorites/List|Add|Remove` | `customer_favorite` | 单客户上限 **20**（超出返回额度不足）；重复收藏与取消都幂等；只回商品 Id（商品信息在商品服务，收藏表不存快照） |
 | 归属 | — | 所有带 `customerId` 的 C 端接口一律过 `CustomerScope`：客户令牌与请求体不一致 → **403**；拿别人的地址 Id（用自己的 customerId）→ **404**（等同于不存在，不泄露 Id 是否真实） |
 
@@ -353,7 +360,7 @@
 |---|---|
 | 主键生成 | FreeSql `Aop.DataMapping` 在 `InsertBefore` 对 `EntityBase` 注入 Yitter 雪花 Id |
 | 列类型 | `bigint`，**不自增、无 default** |
-| JSON 下发 | 全局 `JsonNumberHandling.WriteAsString` → Id 自动转字符串 |
+| JSON 下发 | 默认按 **JSON 数字**下发；**需要跨端保持精度的 Id 在 DTO 里显式声明为 `string`**（如 `ProductId` / `SkuId` / 订单号相关字段）。不用全局 `JsonNumberHandling.WriteAsString`：那会把金额 / 数量也变成字符串，前端与回归脚本的算术/严格比较会成片失效（实测打穿 63 个用例），收益（Id 精度）在 Id 未达 2^53 前并不存在 |
 | Handler 内比较 | 用 `long` 直接比，**不要 `ToString()` 后比** |
 | 前端 | **禁止 `Number(id)`**；仅判断「是否为 0」可用 `Number(id) > 0` |
 | 种子 / 初始化 | **不能依赖 AOP**，用「当前最大 Id + 1」 |
@@ -492,11 +499,11 @@ workerId 空间只有 64 个，开发机一天重启十几次服务，跑满 64 
 
 | 场景 | 必须返回 |
 |---|---|
-| 订单列表 / 详情 | `PlatformName`、`MerchantName`、`CustomerName`（或脱敏 `CustomerPhoneMask`）、逐行 `ProductName`、`SkuSpecText` |
+| 订单列表 / 详情 | `PlatformName`、`MerchantName`、`CustomerName`（或脱敏 `CustomerPhoneMask`）、逐行 `ProductName`、`SkuSpecText`；列表另带最多 3 个商品主图 `Images` 与能力标志 `CanPay` / `CanCancel` / `CanRefund` / `CanConfirmReceipt`；详情行带 `Image` |
 | 商品列表 | `BrandName`、`CategoryName`、`MinPrice`、`MaxPrice`、`FinalPrice`（到手价）、`ActivityTagText`、`CouponTagText`、`EvaluationScore`、`EvaluationCount` |
 | 退款单 | `OrderNo`、`PlatformName`、`MerchantName`、`CustomerName`、逐行 `ProductName` |
 | 评价列表 | `ProductName`（SPU 名）、`SkuSpecTextList`、`ReplyContent`、`IsAnonymous` |
-| 积分流水 | `BizNo`（业务号，订单积分就是订单号；签到是日期）+ `ActionName`（动作中文名）。C 端与后台**都要带文案**：只给 `action` 编码的话小程序得自己写对照表（4.5 禁止），后端加新动作就有一处漏改 |
+| 积分流水 | `BizNo`（业务号，订单积分就是订单号；签到是日期）+ `ActionName`（动作中文名）。C 端与后台**都要带文案**：只给 `action` 编码的话商城端得自己写对照表（4.5 禁止），后端加新动作就有一处漏改 |
 | 秒杀管理 | `SessionName`、`ProductName`、`SkuSpecText`、`SoldCount` |
 | 工作台报表 | `metrics` 数组：每项 `{key, label, value, unit}`，`label` 是中文指标名、`value` 是**已格式化**的展示值（金额两位小数带千分位、比率已转百分数）。扁平数值字段照旧保留（报表页做二次计算用）。回归 `API-RPT-004b` |
 | 日志列表 | `OperatorName`、`ModuleText` |
@@ -532,15 +539,15 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 
 ### 4.6 数字与 Id 的前端处理
 
-后端数字统一按字符串下发，前端必须区分处理：
+后端数字按 **JSON 数字**下发（需要跨端保精度的 Id 字段由 DTO 显式声明为 `string`），前端必须区分处理：
 
 | 类型 | 处理 |
 |---|---|
 | **枚举 / 金额 / 数量** | 先 `Number()` 再比较或回填，否则 `el-radio` / `el-select` 严格比较不回显 |
-| **雪花 Id** | **保持字符串**，禁止 `Number()`；比较用 `===` 原样比 |
+| **雪花 Id** | **保持原样**（DTO 声明为 string 的字段），禁止 `Number()`；比较用 `===` 原样比 |
 | **金额展示** | 统一走格式化工具，保留两位小数，带千分位 |
 
-统一封装到 `apps/admin-vue/src/utils/` 与 `apps/user-uniapp/src/common/`，**禁止在页面里重复写归一化逻辑**。
+统一封装到 `apps/admin-vue/src/utils/`，**禁止在页面里重复写归一化逻辑**。
 
 ### 4.7 统一响应与分页结构
 
@@ -570,6 +577,11 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 > 换成默认 UTC 的镜像就整体差 8 小时，而 2.8 那句「容器时区变化不会污染历史数据」正是要防这个。
 > 回归：`API-PAY-047`（拿接口返回的时间与 `UtcNow` 比，差几分钟内才算对）。
 
+**C 端商品筛选 / 排序参数**（`shop/products/List`、`shop/products/Search`）：
+`categoryIds[]` / `brandIds[]`（多选，每项最多 50 个）、`minPrice` / `maxPrice`
+（按 **SKU 最低售价** `product.min_price`）、`sortBy`（0 综合 / 1 销量 / 2 价格升 / 3 价格降 / 4 上新）。
+价格区间、多选、销量、上新走数据库；只有「综合 + 单分类/单品牌 + 无价格条件」走 ES。
+
 ---
 
 ## 5. 后台表单字段规格
@@ -590,18 +602,26 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 | 字段 | 类型 | 必填 | 默认值 | 校验规则 | 说明 |
 |---|---|---|---|---|---|
 | PlatformName | string(128) | ✔ | — | 2-64 字符；trim；**全局唯一** | 平台名称 |
-| PlatformCode | string(16) | ✔ | — | **6 位字母** `[A-Za-z]{6}`；trim；**全局唯一** | **编辑时只读、不可修改**（小程序 `PLATFORM_CODE` 锁定它） |
+| PlatformCode | string(16) | ✔ | — | **6 位字母** `[A-Za-z]{6}`；trim；**全局唯一** | **编辑时只读、不可修改**（商城端 `PLATFORM_CODE` 绑定它） |
 | ContactName | string(64) | ✔ | — | 2-32 字符；trim | 联系人 |
 | ContactPhone | string(20) | ✔ | — | `^1[3-9]\d{9}$` | 联系电话 |
 | Logo | string(512) | | 空 | URL 长度 ≤ 512；走 ToolService 上传 | **选填** |
-| MallName | string(128) | ✔ | — | 2-64 字符；trim | 商城名称（小程序顶部展示） |
+| MallName | string(128) | ✔ | — | 2-64 字符；trim | 商城名称（商城端顶部展示） |
 | Notice | string(500) | | 空 | ≤ 500 字符 | 首页公告 |
+| MallIntro | string(1000) | | 空 | ≤ 1000 字符 | 商城简介（「关于我们」展示） |
+| ShareTitle | string(128) | | 空 | ≤ 128 字符 | 小程序分享标题 |
+| ShareImage | string(512) | | 空 | URL ≤ 512；走 ToolService 上传 | 小程序分享图 |
+| ServiceWechat | string(64) | | 空 | ≤ 64 字符 | 客服微信号 |
+| ServicePhone | string(20) | | 空 | ≤ 20 字符 | 客服电话 |
+| IcpNo | string(64) | | 空 | ≤ 64 字符 | ICP 备案号 |
+| UserAgreement | text | | 空 | ≤ 20000 字符 | 用户协议全文（小程序独立页） |
+| PrivacyPolicy | text | | 空 | ≤ 20000 字符 | 隐私政策全文（小程序独立页） |
 | PrimaryColor | string(16) | | `#0071e3` | 十六进制颜色 `#RRGGBB` | 主题色 |
 | TabColor | string(16) | | `#0071e3` | 十六进制颜色 | TabBar 选中色 |
 | BackgroundColor | string(16) | | `#f5f5f7` | 十六进制颜色 | 页面背景色 |
 | ShippingFee | decimal(18,2) | | `0.00` | `>= 0`；两位小数 | **运费，仅对实物快递收取** |
 | FreeShippingThreshold | decimal(18,2) | | `0` | `>= 0`；`0` 表示不启用包邮 | 满额包邮门槛，按商品实付判定 |
-| Status | int | ✔ | `1` | 1 启用 / 2 停用 | 停用后小程序不可见、不可交易 |
+| Status | int | ✔ | `1` | 1 启用 / 2 停用 | 停用后商城端不可见、不可交易 |
 | Remark | string(512) | | 空 | ≤ 512 字符 | 备注 |
 
 **只读展示字段**（列表 / 详情返回，不在表单内编辑）：
@@ -619,8 +639,15 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 | 操作 | 规则 |
 |---|---|
 | 删除 | **有下级数据（商户 / 商品 / 订单）时禁止删除**，只能停用。仅「无商户、无商品、无订单」的平台可删除（软删） |
-| 停用 | 级联影响：小程序不可见、C 端不可下单；**历史订单与报表不受影响** |
+| 停用 | 级联影响：商城端不可见、C 端不可下单；**历史订单与报表不受影响** |
 | 复制编码 | 编辑保存时若 `PlatformCode` 传入值与原值不同，**忽略传入值**（不报错，防止前端误改） |
+
+**公开读取接口**（无需登录，供小程序运行期切换平台与渲染商城信息）：
+
+| 接口 | 返回 | 说明 |
+|---|---|---|
+| `GET /gateway/platforms/Public` | 启用平台的 `id` / `platformCode` / `platformName` / `mallName` / `logo` / 三档主题色 | **只返回启用平台**；停用平台既不出现在切换列表，也禁止登录 |
+| `GET /gateway/platforms/PublicDetail?platformCode=` | 商城名、Logo、公告、三档主题色、分享标题 / 分享图、客服微信 / 电话、用户协议、隐私政策、ICP 备案号、商城简介 | 编码非法回 400；不存在或已停用回 **404**（两者同一文案，不泄露平台是否存在） |
 
 ### 5.2 创建 / 编辑商户
 
@@ -636,6 +663,8 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 | ContactPhone | string(20) | ✔ | — | `^1[3-9]\d{9}$` | 联系电话 |
 | Logo | string(512) | | 空 | URL ≤ 512 | **选填** |
 | Description | string(1000) | | 空 | **≤ 1000 字符** | 店铺简介（C 端店铺页展示） |
+| ServiceGuarantee | string(1000) | | 空 | ≤ 1000 字符 | 服务保障文案，**商户级别**，小程序商品详情页展示（如「正品保证 / 七天无理由」） |
+| DeliveryNote | string(1000) | | 空 | ≤ 1000 字符 | 配送说明文案，**商户级别**，小程序商品详情页展示 |
 | Status | int | ✔ | `2` | 1 启用 / 2 停用 | **新建默认停用**（需审核通过后才可运营） |
 | Remark | string(512) | | 空 | ≤ 512 字符 | 备注 |
 
@@ -662,6 +691,9 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 | 编辑限制 | `AuditStatus = 90 已拒绝` 时**允许编辑**（改完重新提交回到待审核）；`20 已通过` 时编辑**不重置审核状态** |
 | 停用 | 商户停用后**不可新增商品、不可接单**，但**历史订单与退款仍可处理**。**副作用：批量下架该商户全部已上架商品，并发布 `product.changed` 同步 ES 索引** |
 | 删除 | 有商品或订单时禁止删除，只能停用 |
+
+**公开读取**：`GET /gateway/merchants/Shop/{merchantId}` 返回店铺公开信息（名称、Logo、简介、评分、
+服务保障、配送说明）；未过审或已停用回 404。小程序商品详情页按商品的 `merchantId` 调它取展示文案。
 
 ### 5.3 商户审核
 
@@ -750,6 +782,9 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 | Status | int | ✔ | `2` | 1 上架 / 2 下架 | **新建默认下架**；必须审核通过才能上架 |
 | SortOrder | int | | `0` | `>= 0` | 排序 |
 | Remark | string(512) | | 空 | ≤ 512 字符 | 备注 |
+
+**C 端下发口径**：`shop/products/Detail` 的 `Images` / `DetailImages` 以**字符串数组**下发
+（服务端解析库里的 JSON），前端不再二次 `JSON.parse`；历史非法 JSON 降级为空数组，不影响其它字段。
 
 **服务端计算字段（只读）**：
 
@@ -877,11 +912,13 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 
 **接口**：`/gateway/marketing/activities/*`
 **权限点**：`marketing:read` / `marketing:create` / `marketing:update` / `marketing:delete`
-**表**：`marketing_activity` + `marketing_activity_target`
+**表**：`promotion_activity`（适用范围存在 `targets` JSON 列，不拆关联表）
 
 | 字段 | 类型 | 必填 | 默认值 | 校验规则 | 说明 |
 |---|---|---|---|---|---|
 | ActivityName | string(128) | 是 | — | 2-128 字符；trim | 活动名 |
+| CoverImage | string(512) | 否 | 空 | URL ≤ 512；走 ToolService 上传 | 活动主图（小程序活动卡片展示） |
+| Description | string(1000) | 否 | 空 | ≤ 1000 字符 | 活动说明 / 规则（小程序活动商品列表页头部展示） |
 | ActivityType | int | 是 | — | 1 满减 / 2 满折 / 3 满赠 | 决定下面哪些字段必填 |
 | PlatformId | long | 是 | — | 下拉平台 | 归属平台 |
 | MerchantId | long | 否 | 0 | 0 表示平台活动 | 商户账号自动锁定本商户 |
@@ -1364,6 +1401,7 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 | Items | RefundItem[] | 部分退款必填 | 至少 1 行；每行含 OrderItemId 与金额 | 退款的订单行与金额 |
 | Items[].Amount | decimal(18,2) | 是 | 大于 0；两位小数 | 该行退款金额 |
 | Reason | string(500) | 是 | 2-200 字符 | 退款原因 |
+| Images | string[] | 否 | 最多 9 张，每张 ≤512 字符 | 客户上传的退款凭证 URL |
 
 **退款窗口校验（服务端按 DeliveryType 判定）**：
 
@@ -1374,6 +1412,23 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 
 **金额约束**：各行金额合计不得超过该行可退余额；订单级累计不得超过实付（含运费）。
 **可自定义金额**：允许只退部分行或某行的部分金额。
+
+**退款记录新增字段**：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `images` | text | JSON URL 数组，默认 `[]` |
+| `approved_at` | timestamptz nullable | 审批完成时间 |
+
+**退款状态补充**：`95 已撤销`。仅待审批可撤销。
+
+**C 端退款接口**：
+
+| 接口 | 请求 | 返回 |
+|---|---|---|
+| `POST /gateway/refunds/My` | `customerId/status/page/pageSize` | 本人退款分页 |
+| `POST /gateway/refunds/MyDetail` | `customerId/refundId` | 本人退款详情，含 `images/approvedAt` |
+| `POST /gateway/refunds/CancelMy` | `customerId/refundId` | 撤销成功；重复撤销幂等 |
 
 ### 5.27 评价管理（隐藏 / 回复）
 
@@ -1446,14 +1501,14 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 |---|---|---|
 | 读取 | `GET .../Design/{platformId}` | 返回草稿；若无草稿返回已发布版本 |
 | 保存草稿 | `POST .../SaveDraft` | 写入草稿，不影响线上 |
-| 发布 | `POST .../Publish` | 草稿转已发布版本，version 加 1；小程序只读已发布版本 |
+| 发布 | `POST .../Publish` | 草稿转已发布版本，version 加 1；商城端只读已发布版本 |
 
 **装修页布局**：
 
 | 区域 | 内容 |
 |---|---|
 | 左侧组件库 | 按分类分组（布局 / 内容 / 会员 / 店铺 / 我的 / 功能），**按当前页面过滤可用组件** |
-| 中间画布 | 模拟手机屏幕，**按小程序真实样式渲染**；组件可拖入、上下移动、调整宽度与高度 |
+| 中间画布 | 模拟手机屏幕，**按商城端真实样式渲染**；组件可拖入、上下移动、调整宽度与高度 |
 | 右侧属性面板 | 选中组件后编辑其私有配置。字段由 `GET /gateway/design/Components` 随组件一起下发的 **props schema** 驱动（`key` / `label` / `kind` / `placeholder` / `max`），前端不按组件类型写死分支 |
 
 **保存契约（按页增量提交）**：
@@ -1531,7 +1586,7 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 | tabBar | TabItem[] | 是 | — | 至少 2 项、最多 5 项；pagePath 不重复 | 底部导航 |
 | tabBar[].pagePath | string(128) | 是 | — | 必须是已注册的页面路径 | 页面路径 |
 | tabBar[].text | string(16) | 是 | — | 1-8 字符 | 文案 |
-| tabBar[].iconPath | string(512) | 是 | — | 必须是 PNG | 图标（微信小程序要求 PNG） |
+| tabBar[].iconPath | string(512) | 是 | — | 必须是 PNG | 图标（需为 PNG） |
 
 **主题色配置**（不进画布）：
 
@@ -1549,9 +1604,9 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 
 | 项 | 规则 |
 |---|---|
-| 实现方式 | 后台内嵌 iframe 加载商城 H5 预览页 |
+| 实现方式 | 后台内嵌 iframe 加载商城预览页 |
 | 传参 | 用 postMessage 把当前草稿配置推给预览页，预览页即时渲染 |
-| 平台上下文 | 预览时忽略小程序的平台锁定，取消息里的 platformId 渲染 |
+| 平台上下文 | 预览时忽略商城端的平台绑定，取消息里的 platformId 渲染 |
 
 **配置 JSON 校验**：合法 JSON；非空对象；总长度不超过 100KB。
 
@@ -1628,6 +1683,11 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 
 **存储约定**：空表示使用内置默认，不落库 81KB 冗余数据；内置默认数据随程序发布，不入库。
 
+**小程序读取（公开）**：`GET /gateway/regions/Public?platformCode=` 返回
+`{ regions: RegionNode[], isCustom }`，`RegionNode = { name, children }` 的三级结构化树，
+不再把 JSON 字符串交给前端解析。收货地址只使用 `RegionPath`（省/市/区名称路径）；
+`ProvinceCode` / `CityCode` / `DistrictCode` 直接存名称或空串，不再使用「选项下标」编码。
+
 **内置默认的实际内容**：完整三级 **31 省 / 342 市 / 3056 区县**，82,694 字节，
 以嵌入资源 `Features/Region/regions-default.json` 随程序发布（回归：`API-MP-036` 按数量断言，
 不是只看「有没有北京市」）。
@@ -1669,6 +1729,44 @@ SKU 的多个规格值必须由后端拼成**可直接展示的文本**，前端
 | 5.29 装修 | manualProductIds | 必须全部满足「归属正确（平台装修=本平台 / 商户装修=本商户）+ 审核通过 + 已上架」，**任一不满足整单保存失败**并返回不满足的商品 |
 
 **其余字段**（长度、格式、数值范围、日期先后、必填）**前后端都验证**。
+
+### 5.33 公告管理
+
+**接口**：后台 `/gateway/platforms/notices/List|Create|Update|Delete|SetStatus`；
+小程序匿名 `POST /gateway/platforms/notices/Public`
+**权限点**：`notice:read` / `notice:manage`
+**所属服务**：MerchantPlatformService → `simpleshopmerchant.platform_notice`
+
+| 字段 | 类型 | 必填 | 默认值 | 校验规则 | 说明 |
+|---|---|---|---|---|---|
+| Title | string(128) | ✔ | — | 1-128 字符；trim | 公告标题 |
+| Content | string(1000) | ✔ | — | 1-1000 字符；trim | 公告内容 |
+| LinkType | string(32) | | `none` | `none` / `product` / `category` / `activity` / `url` | 点击跳转类型 |
+| LinkParam | string(256) | | 空 | ≤ 256 字符 | 跳转参数（Id 或 URL） |
+| SortOrder | int | | `0` | ≥ 0 | 排序，小的在前 |
+| Status | int | ✔ | `1` | 1 启用 / 2 停用 | 停用后小程序不可见 |
+| PlatformId | long | 超管必填 | `0` | 平台账号由上下文强制本平台 | 归属平台 |
+
+**公开读取**：按 `platformCode` 返回启用中的公告，按 `SortOrder` / `Id` 升序，最多 50 条。
+**商户限制**：商户账号不能维护平台公告 —— 即使权限点被误授予，Handler 也会返回 403。
+
+### 5.34 搜索热搜词
+
+**接口**：后台 `/gateway/search/hot-keywords/List|Create|Update|Delete|SetStatus`；
+小程序匿名 `GET /gateway/shop/search/HotWords`、`GET /gateway/shop/search/Suggest`
+**权限点**：`search:hotword`
+**所属服务**：ProductService → `simpleshopproduct.search_hot_keyword`
+
+| 字段 | 类型 | 必填 | 默认值 | 校验规则 | 说明 |
+|---|---|---|---|---|---|
+| Keyword | string(64) | ✔ | — | 1-64 字符；trim | 热搜词 |
+| SortOrder | int | | `0` | ≥ 0 | 排序，小的在前 |
+| Status | int | ✔ | `1` | 1 启用 / 2 停用 | 停用后小程序不可见 |
+| PlatformId | long | 超管必填 | `0` | 平台账号由上下文强制本平台 | 归属平台 |
+
+**联想规则**：`Suggest` = 热搜词包含匹配 + 商品名前缀（审核通过且已上架），合并去重，
+默认最多 10 条（参数上限 20）。关键词为空时只返回热搜词。
+**商户限制**：商户账号不能维护平台热搜词（Handler 403）。
 
 ---
 

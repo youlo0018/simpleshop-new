@@ -15,7 +15,21 @@ public sealed class ProductSearchOptions
 
     /// <summary>商品索引名。</summary>
     public string IndexName { get; set; } = "simpleshop_product";
+
+    /// <summary>
+    /// 商品搜索同义词，格式为 ES synonym filter 的逗号分组，例如 <c>睫毛,眼睫毛</c>。
+    /// 未配置时使用项目内置的常用商品词。
+    /// </summary>
+    public string[] Synonyms { get; set; } = ProductSearchSynonymDefaults.All.ToArray();
 }
+
+/// <summary>商品搜索关键词变体。</summary>
+/// <param name="Text">送进 ES 的查询文本。</param>
+/// <param name="Boost">相对权重；原词为 1.0。</param>
+/// <param name="RuleType">产生该变体的规则类型；0 表示原词。</param>
+/// <param name="SourceTerm">命中的同义词来源。</param>
+public sealed record SearchKeywordVariant(
+    string Text, double Boost = 1.0, int RuleType = 0, string SourceTerm = "");
 
 /// <summary>
 /// 商品搜索索引。
@@ -57,8 +71,14 @@ public interface IProductSearchIndex
     /// <returns>是否成功。</returns>
     Task<bool> DeleteAsync(long productId, CancellationToken ct = default);
 
+    /// <summary>强制刷新索引，让刚补写的文档立即可被搜索。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>是否成功。</returns>
+    Task<bool> RefreshAsync(CancellationToken ct = default);
+
     /// <summary>按关键词搜索商品 <b>Id</b>。</summary>
-    /// <param name="keyword">关键词，空表示不加关键词条件（只按类目过滤）。</param>
+    /// <param name="keywords">原词及同义词扩展变体；空表示只按类目过滤。</param>
+    /// <param name="platformId">平台过滤，0 表示不限；C 端必须传具体平台。</param>
     /// <param name="categoryId">分类过滤，0 表示不限。</param>
     /// <param name="brandId">品牌过滤，0 表示不限。</param>
     /// <param name="from">跳过前多少条。</param>
@@ -66,7 +86,9 @@ public interface IProductSearchIndex
     /// <param name="ct">取消令牌。</param>
     /// <returns>命中的商品 Id 列表（已按相关度 / 销量排序）。</returns>
     Task<IReadOnlyList<long>> SearchIdsAsync(
-        string keyword, long categoryId, long brandId, int from, int size, CancellationToken ct = default);
+        IReadOnlyList<SearchKeywordVariant> keywords,
+        long platformId, long categoryId, long brandId, int from, int size,
+        CancellationToken ct = default);
 
     /// <summary>取索引里当前存在的全部商品 Id。</summary>
     /// <param name="ct">取消令牌。</param>

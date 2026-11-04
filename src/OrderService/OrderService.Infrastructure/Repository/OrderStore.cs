@@ -40,6 +40,25 @@ public sealed class OrderStore : CrudRepository<Order>, IOrderStore
         => await _db.Select<Order>().Where(a => a.OrderNo == orderNo).FirstAsync(ct);
 
     /// <inheritdoc />
+    public async Task<List<Order>> ListPendingZeroPaySettlementsAsync(
+        int limit, CancellationToken ct = default)
+        => await _db.Select<Order>()
+            .Where(a => a.PayableAmount == 0m
+                        && a.Status == OrderStatuses.PendingShipment
+                        && a.SettleStatus == 0)
+            // 先处理欠得最久的；被取消 / 退款的单不在条件里，不会再结清
+            .OrderBy(a => a.CreatedAt).OrderBy(a => a.Id)
+            .Limit(Math.Clamp(limit, 1, 500))
+            .ToListAsync(ct);
+
+    /// <inheritdoc />
+    public async Task<int> MarkSettledAsync(long orderId, CancellationToken ct = default)
+        => await _db.Update<Order>()
+            .Where(a => a.Id == orderId && a.SettleStatus == 0)
+            .Set(a => new Order { SettleStatus = 1, UpdatedAt = DateTime.UtcNow })
+            .ExecuteAffrowsAsync(ct);
+
+    /// <inheritdoc />
     public new async Task<Order?> GetByIdAsync(long orderId, CancellationToken ct = default)
         => await _db.Select<Order>().Where(a => a.Id == orderId).FirstAsync(ct);
 
@@ -132,7 +151,9 @@ public sealed class OrderStore : CrudRepository<Order>, IOrderStore
                 list[0].ProductName,
                 list.Any(a => a.DeliveryType == DeliveryTypes.Express),
                 list.Any(a => a.DeliveryType == DeliveryTypes.Virtual),
-                list.Any(a => a.DeliveryType == DeliveryTypes.SelfPickup));
+                list.Any(a => a.DeliveryType == DeliveryTypes.SelfPickup),
+                // 只带前 3 个 SKU：列表卡片最多展示 3 个缩略图
+                list.Select(a => a.SkuId).Distinct().Take(3).ToArray());
         }
 
         return result;
@@ -234,10 +255,8 @@ public sealed class OrderStore : CrudRepository<Order>, IOrderStore
         await Task.Run(() => _db.Transaction(() =>
         {
             _db.Insert(refund).ExecuteAffrows();
-            foreach (var item in items)
-            {
-                _db.Insert(item).ExecuteAffrows();
-            }
+            // 批量插入：逐行 INSERT 在 50 行订单上就是 50 次往返（同一条事务里没必要）
+            if (items.Count > 0) _db.Insert(items.ToList()).ExecuteAffrows();
         }), ct).ConfigureAwait(false);
 
         return refund.Id;
@@ -259,6 +278,56 @@ public sealed class OrderStore : CrudRepository<Order>, IOrderStore
             .Set(a => a.Status == (fullyRefunded ? OrderStatuses.Refunded : a.Status))
             .Set(a => a.UpdatedAt == DateTime.UtcNow)
             .ExecuteAffrowsAsync(ct);
+
+    /// <inheritdoc />
+    public async Task<bool> ApplyRefundWithLedgerAsync(
+        long orderId, int fromStatus, decimal amount, bool fullyRefunded,
+        OrderRefund refund, IReadOnlyCollection<OrderRefundItem> items, CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow;
+
+        refund.Id = SnowflakeId.NewId();
+        refund.OrderId = orderId;
+        refund.CreatedAt = now;
+        refund.UpdatedAt = null;
+
+        foreach (var item in items)
+        {
+            item.Id = SnowflakeId.NewId();
+            item.RefundId = refund.Id;
+            item.OrderId = orderId;
+            item.CreatedAt = now;
+            item.UpdatedAt = null;
+        }
+
+        var applied = false;
+
+        await Task.Run(() => _db.Transaction(() =>
+        {
+            // ① 先抢余额：条件更新 0 行说明余额被并发退款用掉或状态已变，
+            //    此时直接结束事务，台账一行都不写 —— 幽灵记录就是从这里堵住的。
+            var affected = _db.Update<Order>()
+                .Where(a => a.Id == orderId
+                            && a.Status == fromStatus
+                            && a.RefundedAmount + amount <= a.PayableAmount)
+                .Set(a => a.RefundedAmount == a.RefundedAmount + amount)
+                .Set(a => a.Status == (fullyRefunded ? OrderStatuses.Refunded : a.Status))
+                .Set(a => a.UpdatedAt == now)
+                .ExecuteAffrows();
+
+            if (affected == 0) return;
+
+            // ② 台账与余额同事务提交：任何一步抛错（唯一键冲突、连接断开）
+            //    都会把上面的余额更新一起回滚，不会出现「钱扣了、账没记」。
+            _db.Insert(refund).ExecuteAffrows();
+            // 批量插入：逐行 INSERT 在 50 行订单上就是 50 次往返
+            if (items.Count > 0) _db.Insert(items.ToList()).ExecuteAffrows();
+
+            applied = true;
+        }), ct).ConfigureAwait(false);
+
+        return applied;
+    }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<(OrderRefund Refund, IReadOnlyList<OrderRefundItem> Items)>>
@@ -395,17 +464,19 @@ public sealed class OrderStore : CrudRepository<Order>, IOrderStore
                 await Task.Run(() => _db.Transaction(() =>
                 {
                     _db.Insert(order).ExecuteAffrows();
-                    foreach (var item in items)
-                    {
-                        _db.Insert(item).ExecuteAffrows();
-                    }
+                    // 批量插入订单行：逐行 INSERT 在 50 行订单上就是 50 次往返
+                    if (items.Count > 0) _db.Insert(items.ToList()).ExecuteAffrows();
                 }), ct).ConfigureAwait(false);
 
                 return order;
             }
-            catch (PostgresException ex) when (ex.SqlState == UniqueViolation)
+            catch (Exception ex) when (PostgresErrors.IsUniqueViolation(ex))
             {
-                if (IsIdempotencyConflict(ex))
+                // 沿异常链解包：FreeSql 有时把 PostgresException 包在普通 Exception 里，
+                // 直接 catch (PostgresException) 会漏掉这条分支（CODING_STANDARD 陷阱 32）。
+                var pg = PostgresErrors.Unwrap(ex)!;
+
+                if (IsIdempotencyConflict(pg))
                 {
                     // 同一个客户 + 同一个幂等键已经有单了。把那张单返回去，
                     // 重复提交就得到同一个订单号，而不是一个「重复下单」的报错。
@@ -415,7 +486,7 @@ public sealed class OrderStore : CrudRepository<Order>, IOrderStore
                     if (existing is not null) return existing;
                 }
 
-                if (IsOrderNoConflict(ex) && attempt < 3)
+                if (IsOrderNoConflict(pg) && attempt < 3)
                 {
                     // 订单号撞了（同一秒内并发概率极低，但不为 0）：重新生成再试。
                     // 最多三次，再撞就抛出去——那已经不是概率问题，是有别的地方坏了。

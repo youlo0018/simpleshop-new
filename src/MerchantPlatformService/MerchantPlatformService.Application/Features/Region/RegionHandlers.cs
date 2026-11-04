@@ -1,4 +1,6 @@
 using Collaboration.Domain.Common;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using MediatR;
 using MerchantPlatformService.Domain.Entities;
 using MerchantPlatformService.Domain.IRepository;
@@ -43,7 +45,7 @@ public sealed class QueryRegionsHandler
 /// 不能调 <c>/regions/Get</c>，所以按固定平台编码提供一个只读入口。
 /// </remarks>
 public sealed class QueryPublicRegionsHandler
-    : IRequestHandler<QueryPublicRegionsCommand, ApiResponse<RegionsResult>>
+    : IRequestHandler<QueryPublicRegionsCommand, ApiResponse<PublicRegionsResult>>
 {
     private readonly IPlatformRepository _platforms;
     private readonly IPlatformConfigRepository _configs;
@@ -61,34 +63,50 @@ public sealed class QueryPublicRegionsHandler
     /// <summary>执行查询。</summary>
     /// <param name="request">命令。</param>
     /// <param name="ct">取消令牌。</param>
-    /// <returns>平台地区数据；平台不存在返回 404。</returns>
-    public async Task<ApiResponse<RegionsResult>> Handle(
+    /// <returns>平台地区数据（结构化三级树）；平台不存在返回 404。</returns>
+    public async Task<ApiResponse<PublicRegionsResult>> Handle(
         QueryPublicRegionsCommand request, CancellationToken ct)
     {
         var code = (request.PlatformCode ?? string.Empty).Trim();
         if (code.Length == 0)
         {
-            return ApiResults.Fail<RegionsResult>(
+            return ApiResults.Fail<PublicRegionsResult>(
                 BaseApiResponseCode.BadRequest, "平台编码不能为空");
         }
 
         var platform = await _platforms.GetByCodeAsync(code, ct).ConfigureAwait(false);
         if (platform is null)
         {
-            return ApiResults.Fail<RegionsResult>(
+            return ApiResults.Fail<PublicRegionsResult>(
                 BaseApiResponseCode.NotFound, "平台不存在或已停用");
         }
 
         var config = await _configs.GetByPlatformAsync(platform.Id, ct).ConfigureAwait(false);
-        var json = string.IsNullOrWhiteSpace(config?.RegionsJson)
-            ? BuiltInRegions.Json
-            : config.RegionsJson;
+        var isCustom = !string.IsNullOrWhiteSpace(config?.RegionsJson);
+        var json = isCustom ? config!.RegionsJson : BuiltInRegions.Json;
 
-        return ApiResults.Ok(new RegionsResult(
-            json,
-            IsCustom: !string.IsNullOrWhiteSpace(config?.RegionsJson),
-            ByteSize: System.Text.Encoding.UTF8.GetByteCount(json)));
+        return ApiResults.Ok(new PublicRegionsResult(ParseNodes(json), isCustom));
     }
+
+    /// <summary>把地区 JSON 解析成结构化三级树。</summary>
+    /// <param name="json">地区 JSON 数组。</param>
+    /// <returns>省 / 市 / 区县节点。</returns>
+    private static IReadOnlyList<RegionNode> ParseNodes(string json)
+    {
+        var nodes = JsonSerializer.Deserialize<List<RegionJsonNode>>(json) ?? [];
+        return nodes.Select(ToNode).ToList();
+    }
+
+    /// <summary>递归转换一个地区节点。</summary>
+    /// <param name="node">JSON 节点。</param>
+    /// <returns>对外节点。</returns>
+    private static RegionNode ToNode(RegionJsonNode node)
+        => new(node.Name, (node.Children ?? []).Select(ToNode).ToList());
+
+    /// <summary>地区 JSON 的节点结构（只取展示所需的名称与下级）。</summary>
+    private sealed record RegionJsonNode(
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("children")] List<RegionJsonNode>? Children);
 }
 
 /// <summary>保存地区数据处理器。</summary>

@@ -5,11 +5,19 @@ namespace CustomerService.Domain.IRepository;
 /// <summary>客户账号仓储。唯一性校验需要查库，所以放在 Handler 而不是 Validator（CODING_STANDARD 3.3）。</summary>
 public interface ICustomerRepository
 {
-    /// <summary>按登录名取客户，不存在返回 null。</summary>
+    /// <summary>按平台 + 登录名取客户，不存在返回 null。</summary>
+    /// <param name="platformId">所属平台 Id。</param>
     /// <param name="customerName">登录名。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>客户实体或 null。幂等只读，无副作用。</returns>
-    Task<Customer?> GetByNameAsync(string customerName, CancellationToken ct = default);
+    Task<Customer?> GetByNameAsync(long platformId, string customerName, CancellationToken ct = default);
+
+    /// <summary>按平台 + 手机号取客户。</summary>
+    /// <param name="platformId">平台 Id。</param>
+    /// <param name="phone">手机号。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>客户实体或 null。</returns>
+    Task<Customer?> GetByPhoneAsync(long platformId, string phone, CancellationToken ct = default);
 
     /// <summary>按 Id 取客户，不存在返回 null。</summary>
     /// <param name="id">客户 Id。</param>
@@ -17,17 +25,19 @@ public interface ICustomerRepository
     /// <returns>客户实体或 null。幂等只读，无副作用。</returns>
     Task<Customer?> GetByIdAsync(long id, CancellationToken ct = default);
 
-    /// <summary>判断登录名是否已被占用。</summary>
+    /// <summary>判断登录名在指定平台内是否已被占用。</summary>
+    /// <param name="platformId">所属平台 Id。</param>
     /// <param name="customerName">登录名。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>true 表示已存在。幂等只读，无副作用。</returns>
-    Task<bool> ExistsByNameAsync(string customerName, CancellationToken ct = default);
+    Task<bool> ExistsByNameAsync(long platformId, string customerName, CancellationToken ct = default);
 
-    /// <summary>判断手机号是否已被占用。</summary>
+    /// <summary>判断手机号在指定平台内是否已被占用。</summary>
+    /// <param name="platformId">所属平台 Id。</param>
     /// <param name="phone">手机号。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>true 表示已存在。幂等只读，无副作用。</returns>
-    Task<bool> ExistsByPhoneAsync(string phone, CancellationToken ct = default);
+    Task<bool> ExistsByPhoneAsync(long platformId, string phone, CancellationToken ct = default);
 
     /// <summary>插入客户。</summary>
     /// <param name="customer">客户实体，Id 与时间戳由 AOP 填充。</param>
@@ -41,8 +51,17 @@ public interface ICustomerRepository
     /// <returns>受影响行数。幂等：重复提交相同值不改变结果。</returns>
     Task<int> UpdateAsync(Customer customer, CancellationToken ct = default);
 
+    /// <summary>更新客户密码哈希。</summary>
+    /// <param name="customerId">客户 Id。</param>
+    /// <param name="passwordHash">新密码哈希。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>受影响行数。</returns>
+    Task<int> UpdatePasswordAsync(
+        long customerId, string passwordHash, CancellationToken ct = default);
+
     /// <summary>后台分页查客户。</summary>
     /// <param name="status">状态，0 表示不限。</param>
+    /// <param name="platformId">平台过滤，0 表示不限（超管看全部）。</param>
     /// <param name="keyword">按登录名 / 昵称 / 手机号模糊匹配。</param>
     /// <param name="page">页码。</param>
     /// <param name="pageSize">每页条数。</param>
@@ -53,7 +72,7 @@ public interface ICustomerRepository
     /// 让他先去别处查登录名是很反直觉的。
     /// </remarks>
     Task<(List<Customer> Items, long Total)> PageForAdminAsync(
-        int status, string keyword, int page, int pageSize, CancellationToken ct = default);
+        int status, long platformId, string keyword, int page, int pageSize, CancellationToken ct = default);
 
     /// <summary>条件更新账号状态。</summary>
     /// <param name="customerId">客户 Id。</param>
@@ -69,5 +88,15 @@ public interface ICustomerRepository
     /// </remarks>
     Task<int> TryChangeStatusAsync(
         long customerId, int expectedStatus, int newStatus, CancellationToken ct = default);
+
+    /// <summary>把尚未归属平台的存量客户（platform_id = 0）回填到指定平台。</summary>
+    /// <param name="platformId">目标平台 Id，必须大于 0。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>受影响行数。</returns>
+    /// <remarks>
+    /// 账号改为「平台内账号」前落库的客户没有平台归属，无法登录（登录按平台查账号）。
+    /// 这是一次性的运维动作，幂等：只更新 platform_id = 0 的行，重复执行影响 0 行。
+    /// </remarks>
+    Task<int> BackfillPlatformAsync(long platformId, CancellationToken ct = default);
 }
 

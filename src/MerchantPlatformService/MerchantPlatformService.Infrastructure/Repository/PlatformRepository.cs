@@ -104,7 +104,10 @@ public sealed class PlatformRepository : CrudRepository<Platform>, IPlatformRepo
         if (!string.IsNullOrWhiteSpace(keyword))
         {
             var text = keyword.Trim();
-            query = query.Where(a => a.PlatformName.Contains(text) || a.PlatformCode.Contains(text));
+            query = query.Where(a =>
+                a.PlatformName.Contains(text)
+                || a.PlatformCode.Contains(text)
+                || a.MallName.Contains(text));
         }
 
         if (status > 0) query = query.Where(a => a.Status == status);
@@ -132,4 +135,27 @@ public sealed class PlatformRepository : CrudRepository<Platform>, IPlatformRepo
             .OrderBy(a => a.Id)
             .ToList();
     }
+
+    /// <inheritdoc />
+    public async Task<List<(long Id, string Name)>> ListNamesByIdsAsync(
+        IReadOnlyList<long> platformIds, CancellationToken ct = default)
+    {
+        if (platformIds.Count == 0) return [];
+
+        // 内部上下文（Access = Internal）不过租户过滤，这里显式去重 + 限流（一次最多 200 个）
+        var ids = platformIds.Where(a => a > 0).Distinct().Take(200).ToArray();
+        if (ids.Length == 0) return [];
+
+        var rows = await Db.Select<Platform>()
+            .Where(a => ids.Contains(a.Id))
+            .ToListAsync(a => new NameRow(a.Id, a.PlatformName), ct)
+            .ConfigureAwait(false);
+
+        return rows.Select(a => (a.Id, a.Name)).ToList();
+    }
+
+    /// <summary>名称投影行（FreeSql 投影需要具名类型，元组映射不可靠）。</summary>
+    /// <param name="Id">Id。</param>
+    /// <param name="Name">展示名。</param>
+    private sealed record NameRow(long Id, string Name);
 }

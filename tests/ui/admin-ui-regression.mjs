@@ -48,6 +48,11 @@ const IGNORED_ERROR = [
 
 const ignored = (t) => IGNORED_ERROR.some((re) => re.test(t));
 
+// 与 IGNORED_ERROR 配套的「请求级别」忽略名单：
+// Chromium 对子资源加载失败的控制台文案不含 URL，正则匹配不到 cdn.example.com，
+// 只能靠 requestfailed 事件拿到 URL，再抵消同一页对应的那条通用 console 报错。
+const IGNORED_REQUEST_HOSTS = ['cdn.example.com'];
+
 // 菜单点到不了的页面（详情 / 编辑需要真实 Id），用「流程」覆盖：
 // 从列表页出发，按真实操作路径一步步走，每步都截图。
 // 这也是「每一个测试都要一步步截图验证」的落点——
@@ -227,11 +232,23 @@ async function readMenu(page) {
 async function visit(page, item) {
   const errors = [];
   const failed = [];
+  // 通用资源报错（「Failed to load resource」不带 URL）先攒着，页面跑完再按
+  // 「同页确认属于忽略名单的请求失败数」抵消 —— 控制台事件与 requestfailed
+  // 的到达顺序不保证，边收边抵消会漏。
+  const resourceErrors = [];
+  let ignoredFailureCount = 0;
   // 抓列表接口的响应体，用来和 DOM 交叉核对（见下面「裸枚举数字」的加强检查）。
   // 只记成功且带 data 的 JSON，避免把错误响应也当成数据。
   let lastListBody = null;
   const onConsole = (m) => {
-    if (m.type() === 'error' && !ignored(m.text())) errors.push(m.text().slice(0, 300));
+    if (m.type() !== 'error') return;
+    const text = m.text();
+    if (ignored(text)) return;
+    if (/Failed to load resource/i.test(text)) {
+      resourceErrors.push(text);
+      return;
+    }
+    errors.push(text.slice(0, 300));
   };
   const onResponse = (r) => {
     const s = r.status();
@@ -251,6 +268,11 @@ async function visit(page, item) {
   };
   const onError = (e) => {
     const t = String(e.message?.split('\n')[0] || e);
+    const url = String(e.url?.() || '');
+    if (IGNORED_REQUEST_HOSTS.some((host) => url.includes(host))) {
+      ignoredFailureCount++;
+      return;
+    }
     if (!ignored(t)) failed.push(`NET ${t.slice(0, 200)}`);
   };
 
@@ -397,6 +419,11 @@ async function visit(page, item) {
       path: path.join(SHOT_DIR, `adm-${name}-1440x900.png`),
       fullPage: true,
     });
+
+    // 抵消同页确认的「已知域名资源失败」；多余的通用报错照常计入失败。
+    for (const text of resourceErrors.slice(ignoredFailureCount)) {
+      errors.push(text.slice(0, 300));
+    }
 
     return {
       group: item.group,
@@ -589,9 +616,18 @@ async function visitNonMenu(page, spec, id) {
   const href = spec.route.replace('{id}', id);
   const errors = [];
   const failed = [];
+  const resourceErrors = [];
+  let ignoredFailureCount = 0;
 
   const onConsole = (m) => {
-    if (m.type() === 'error' && !ignored(m.text())) errors.push(m.text().slice(0, 300));
+    if (m.type() !== 'error') return;
+    const text = m.text();
+    if (ignored(text)) return;
+    if (/Failed to load resource/i.test(text)) {
+      resourceErrors.push(text);
+      return;
+    }
+    errors.push(text.slice(0, 300));
   };
   const onResponse = (r) => {
     const s = r.status();
@@ -599,9 +635,14 @@ async function visitNonMenu(page, spec, id) {
       failed.push(`${s} ${r.request().method()} ${r.url().replace(BASE, '')}`);
     }
   };
+  const onRequestFailed = (r) => {
+    const url = r.url();
+    if (IGNORED_REQUEST_HOSTS.some((host) => url.includes(host))) ignoredFailureCount++;
+  };
 
   page.on('console', onConsole);
   page.on('response', onResponse);
+  page.on('requestfailed', onRequestFailed);
 
   try {
     await page.goto(`${BASE}/${href}`, { waitUntil: 'domcontentloaded' });
@@ -624,6 +665,11 @@ async function visitNonMenu(page, spec, id) {
     const name = `adm-${nmSlug(spec.name)}-${nmSlug(spec.title)}-1440x900.png`;
     await page.screenshot({ path: path.join(SHOT_DIR, name), fullPage: true });
 
+    // 抵消同页确认的「已知域名资源失败」；多余的通用报错照常计入失败。
+    for (const text of resourceErrors.slice(ignoredFailureCount)) {
+      errors.push(text.slice(0, 300));
+    }
+
     return {
       group: spec.name,
       title: spec.title,
@@ -638,6 +684,7 @@ async function visitNonMenu(page, spec, id) {
   } finally {
     page.off('console', onConsole);
     page.off('response', onResponse);
+    page.off('requestfailed', onRequestFailed);
   }
 }
 

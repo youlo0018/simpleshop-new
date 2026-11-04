@@ -29,6 +29,8 @@ builder.Configuration.AddJsonFile("ocelot.json", optional: false, reloadOnChange
 builder.Services.Configure<GatewayOptions>(builder.Configuration.GetSection(GatewayOptions.SectionName));
 
 // 权限中心客户端：只用来拉「路径 → 权限点」映射
+builder.Services.AddInternalTokenPropagation();
+
 builder.Services.AddHttpClient<RoutePermissionCache>((sp, http) =>
 {
     var url = sp.GetRequiredService<IOptions<GatewayOptions>>().Value.Rbac.PermissionServiceUrl;
@@ -40,7 +42,7 @@ builder.Services.AddHttpClient<RoutePermissionCache>((sp, http) =>
 
     http.BaseAddress = new Uri(url.TrimEnd('/') + "/");
     http.Timeout = TimeSpan.FromSeconds(5);
-});
+}).AddHttpMessageHandler<InternalTokenHandler>();
 
 builder.Services.AddSingleton<DualTokenValidator>();
 
@@ -54,6 +56,10 @@ Console.WriteLine($"[bootstrap] redis 已连接 db={redisOptions.SharedDatabase}
 builder.Services.AddSingleton<IConnectionMultiplexer>(redis);
 builder.Services.AddSingleton(sp => new AdminSessionRevocationChecker(
     redis, redisOptions.SharedDatabase, sp.GetRequiredService<ILogger<AdminSessionRevocationChecker>>()));
+// 客户会话校验：登录 / 注册在 CustomerService 写共享库会话键，网关逐请求校验并滑动续期。
+// 与后台吊销共用同一个共享库号，否则两边永远读不到同一把键，而且失败是静默的。
+builder.Services.AddSingleton(sp => new CustomerSessionChecker(
+    redis, redisOptions.SharedDatabase, sp.GetRequiredService<ILogger<CustomerSessionChecker>>()));
 
 // Ocelot：只做路由转发。
 // 刻意不接 Polly：下游各服务的重试 / 降级还没做，先由服务自身保证幂等，

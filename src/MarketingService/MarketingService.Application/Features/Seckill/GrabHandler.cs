@@ -1,4 +1,5 @@
 using Collaboration.Domain.Common;
+using Collaboration.Domain.Context;
 using MediatR;
 using MarketingService.Application.Services;
 using MarketingService.Domain.Entities;
@@ -59,8 +60,13 @@ public sealed class GrabSeckillHandler
     /// <returns>抢购结果。</returns>
     public async Task<ApiResponse<GrabResultDto>> Handle(GrabSeckillCommand request, CancellationToken ct)
     {
+        // 防 IDOR：抢购会花客户自己的积分、占自己的券、并把货发到请求里的地址。
+        // 直接采信请求体的 CustomerId 等于「用受害人的钱下单、货寄给攻击者」，
+        // 所以客户标识一律以令牌为准（客户令牌与请求不一致直接 403）。
+        var customerId = CustomerScope.Require(request.CustomerId);
+
         var requestId = Guid.NewGuid().ToString("N");
-        var bizNo = $"{request.ItemId}:{request.CustomerId}";
+        var bizNo = $"{request.ItemId}:{customerId}";
 
         var item = await _seckill.GetItemAsync(request.ItemId, ct).ConfigureAwait(false);
         if (item is null || item.Status != SeckillItemStatuses.Enabled)
@@ -114,7 +120,7 @@ public sealed class GrabSeckillHandler
                 BizNo = bizNo,
                 SessionId = session.Id,
                 ItemId = item.Id,
-                CustomerId = request.CustomerId,
+                CustomerId = customerId,
                 Quantity = 1,
                 ResultStatus = SeckillGrabResults.Processing
             };
@@ -124,13 +130,13 @@ public sealed class GrabSeckillHandler
         catch (DuplicateGrabException)
         {
             await _redis.StringIncrementAsync(key).ConfigureAwait(false);
-            _logger.LogInformation("客户 {CustomerId} 重复抢购商品 {ItemId}，已被限购拦下", request.CustomerId, request.ItemId);
+            _logger.LogInformation("客户 {CustomerId} 重复抢购商品 {ItemId}，已被限购拦下", customerId, request.ItemId);
             return Reject(requestId, SeckillGrabResults.LimitExceeded, "每人每场次限购 1 件");
         }
 
         // ---- ③ 下单 ----
         var result = await _orders.CreateSeckillOrderAsync(new SeckillOrderRequest(
-            request.CustomerId, session.PlatformId, session.MerchantId,
+            customerId, session.PlatformId, session.MerchantId,
             bizNo,                                  // 幂等键 = 限购业务单号，重复提交拿到同一张单
             request.ReceiverName, request.ReceiverPhone, request.ReceiverAddress,
             item.SpuId, item.SkuId, 1,
@@ -148,7 +154,7 @@ public sealed class GrabSeckillHandler
             await _seckill.UpdateGrabAsync(grab, ct).ConfigureAwait(false);
 
             _logger.LogWarning("秒杀下单失败，商品 {ItemId} 客户 {CustomerId}：{Message}",
-                item.Id, request.CustomerId, result.Message);
+                item.Id, customerId, result.Message);
 
             return Reject(requestId, SeckillGrabResults.OrderFailed, result.Message);
         }

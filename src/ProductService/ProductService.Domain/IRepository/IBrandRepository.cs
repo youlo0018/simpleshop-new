@@ -9,9 +9,14 @@ public interface IBrandRepository
     /// <param name="keyword">按品牌名模糊搜索。</param>
     /// <param name="includeDisabled">是否包含停用品牌。</param>
     /// <param name="ct">取消令牌。</param>
+    /// <param name="platformId">
+    /// 平台过滤，0 表示不限。&gt;0 时返回「本平台私有 + 全平台公共（platform_id = 0）」的品牌；
+    /// 追加在最后是为了不破坏已有位置传参的调用点（CODING_STANDARD 陷阱 63）。
+    /// </param>
     /// <returns>品牌列表与总数。幂等只读。</returns>
     Task<(List<Entities.Brand> Items, long Total)> QueryPagedAsync(
-        int page, int pageSize, string keyword, bool includeDisabled, CancellationToken ct = default);
+        int page, int pageSize, string keyword, bool includeDisabled,
+        CancellationToken ct = default, long platformId = 0);
 
     /// <summary>按 Id 取品牌。</summary>
     /// <param name="id">品牌 Id。</param>

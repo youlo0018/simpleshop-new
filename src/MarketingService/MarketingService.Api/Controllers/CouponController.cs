@@ -25,11 +25,13 @@ public sealed class CouponController : ControllerBase
         => _mediator.Send(command, ct);
 
     /// <summary>查询当前可领取的券活动。</summary>
+    /// <param name="command">平台、客户与分页条件；匿名访问时客户状态不返回。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>可领取活动列表。</returns>
     [HttpPost("Available")]
-    public Task<ApiResponse<List<CouponActivityItem>>> Available(CancellationToken ct)
-        => _mediator.Send(new QueryAvailableCouponsCommand(), ct);
+    public Task<ApiResponse<PagedResult<AvailableCouponDto>>> Available(
+        [FromBody] QueryAvailableCouponsCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
 
     /// <summary>查询当前客户自己的券包。</summary>
     /// <param name="command">查询命令。</param>

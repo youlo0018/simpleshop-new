@@ -213,6 +213,7 @@ import FulfillDialog from '@/components/FulfillDialog.vue';
 import { statusColor } from '@/utils/dict';
 import { formatAmount, formatCount, formatDateTime, emptyText, maskPhone } from '@/utils/format';
 import { hasPermission } from '@/utils/session';
+import { openAdminPage } from '@/utils/navigation';
 
 const STATUS_TABS = [
   { label: '待支付', value: 10 },
@@ -294,7 +295,7 @@ function reload() {
 }
 
 function goDetail(row: any) {
-  router.push('/orders/detail/' + row.orderId);
+  openAdminPage('/orders/detail/' + row.orderId);
 }
 
 function canRefund(row: any) {

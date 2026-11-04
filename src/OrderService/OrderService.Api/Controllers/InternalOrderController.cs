@@ -52,6 +52,20 @@ public sealed class InternalOrderController : ControllerBase
         [FromBody] CloseTimeoutOrdersCommand command, CancellationToken ct)
         => _mediator.Send(command, ct);
 
+    /// <summary>重放实付 0 元订单的占用结清（ScheduledService 补偿任务调用）。</summary>
+    /// <param name="command">补偿命令，Limit 控制单轮数量。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>扫描 / 结清 / 失败统计。</returns>
+    /// <remarks>
+    /// 0 元单没有支付回调，占用结清失败后订单仍停在「待发货」——
+    /// 库存锁着、积分冻着、券占着，没有任何别的路径会把它们收回来。
+    /// 每一步下游调用都按订单号幂等，重放不会重复扣减。
+    /// </remarks>
+    [HttpPost("settle-zero-pay")]
+    public Task<ApiResponse<SettleZeroPayResult>> SettleZeroPay(
+        [FromBody] SettleZeroPayOrdersCommand command, CancellationToken ct)
+        => _mediator.Send(command, ct);
+
     /// <summary>按订单号取评价所需信息（供 EvaluateService 调用）。</summary>
     /// <param name="command">查询命令。</param>
     /// <param name="ct">取消令牌。</param>

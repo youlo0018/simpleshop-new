@@ -33,8 +33,10 @@ public interface IProductClient
 /// <param name="Enabled">SKU 是否启用。</param>
 /// <param name="SpuApproved">所属 SPU 是否审核通过。</param>
 /// <param name="SpuOnShelf">所属 SPU 是否已上架。</param>
+/// <param name="MerchantId">归属商户 Id，0 表示平台自营。</param>
 public sealed record SkuAvailability(
-    long SkuId, decimal Price, bool Enabled, bool SpuApproved, bool SpuOnShelf);
+    long SkuId, decimal Price, bool Enabled, bool SpuApproved, bool SpuOnShelf,
+    long MerchantId = 0);
 
 /// <summary>SKU 快照。字段与 ProductService 的内部接口保持一致。</summary>
 public sealed record SkuSnapshot(
@@ -46,11 +48,20 @@ public sealed record SkuSnapshot(
     [property: JsonPropertyName("price")] decimal Price,
     [property: JsonPropertyName("originalPrice")] decimal OriginalPrice,
     [property: JsonPropertyName("image")] string Image,
-    [property: JsonPropertyName("status")] int Status);
+    [property: JsonPropertyName("status")] int Status,
+    [property: JsonPropertyName("merchantId")] long MerchantId = 0);
 
 /// <summary>走内网 HTTP 调用商品服务的实现。</summary>
 public sealed class HttpProductClient : IProductClient
 {
+    /// <summary>单次批量查询的 SKU 上限。</summary>
+    /// <remarks>
+    /// 下游两个接口上限不同（快照 200 / 定价 50），统一按**较小的 50** 分片。
+    /// 不分片的话，几百个 SKU 会被下游 `Take(50)` 悄悄截断 —— 后段商品的价格与
+    /// 可售状态全部缺失，而购物车页面看不出哪里不对（还可能是 URL 过长直接 414）。
+    /// </remarks>
+    private const int MaxSkuIdsPerRequest = 50;
+
     private readonly HttpClient _http;
     private readonly ILogger<HttpProductClient> _logger;
 
@@ -69,18 +80,25 @@ public sealed class HttpProductClient : IProductClient
     {
         if (skuIds.Count == 0) return Array.Empty<SkuSnapshot>();
 
-        var query = string.Join(',', skuIds);
-        var response = await _http.GetAsync($"internal/products/skus?skuIds={query}", ct);
-        response.EnsureSuccessStatusCode();
+        var result = new List<SkuSnapshot>();
 
-        var body = await response.Content.ReadFromJsonAsync<ApiResponse<List<SkuSnapshot>>>(ct);
-        if (body is null || !body.Success || body.Data is null)
+        foreach (var chunk in skuIds.Distinct().Chunk(MaxSkuIdsPerRequest))
         {
-            _logger.LogError("商品服务返回异常：{Message}", body?.Message ?? "(空响应)");
-            return Array.Empty<SkuSnapshot>();
+            var query = string.Join(',', chunk);
+            var response = await _http.GetAsync($"internal/products/skus?skuIds={query}", ct);
+            response.EnsureSuccessStatusCode();
+
+            var body = await response.Content.ReadFromJsonAsync<ApiResponse<List<SkuSnapshot>>>(ct);
+            if (body is null || !body.Success || body.Data is null)
+            {
+                _logger.LogError("商品服务返回异常：{Message}", body?.Message ?? "(空响应)");
+                continue;
+            }
+
+            result.AddRange(body.Data);
         }
 
-        return body.Data;
+        return result;
     }
 
     /// <inheritdoc />
@@ -89,24 +107,32 @@ public sealed class HttpProductClient : IProductClient
     {
         if (skuIds.Count == 0) return new Dictionary<long, SkuAvailability>();
 
-        var query = string.Join(',', skuIds);
-        var response = await _http.GetAsync($"internal/products/skus/pricing?skuIds={query}", ct);
-        response.EnsureSuccessStatusCode();
+        var result = new Dictionary<long, SkuAvailability>();
 
-        var body = await response.Content.ReadFromJsonAsync<ApiResponse<List<SkuPricing>>>(ct);
-        if (body is null || !body.Success || body.Data is null)
+        foreach (var chunk in skuIds.Distinct().Chunk(MaxSkuIdsPerRequest))
         {
-            // 返回空集合而不是抛：商品服务抖动不该让整个购物车打不开。
-            // 代价是这一轮不刷新价格（显示的还是库里那份），但购物车仍然可用 ——
-            // 抛出去的话，用户会发现「购物车打不开了」，而商品其实只是暂时查不到。
-            _logger.LogError("商品服务可售状态返回异常：{Message}", body?.Message ?? "(空响应)");
-            return new Dictionary<long, SkuAvailability>();
+            var query = string.Join(',', chunk);
+            var response = await _http.GetAsync($"internal/products/skus/pricing?skuIds={query}", ct);
+            response.EnsureSuccessStatusCode();
+
+            var body = await response.Content.ReadFromJsonAsync<ApiResponse<List<SkuPricing>>>(ct);
+            if (body is null || !body.Success || body.Data is null)
+            {
+                // 跳过这一片而不是抛：商品服务抖动不该让整个购物车打不开。
+                // 代价是这一片不刷新价格（显示的还是库里那份），但购物车仍然可用。
+                _logger.LogError("商品服务可售状态返回异常：{Message}", body?.Message ?? "(空响应)");
+                continue;
+            }
+
+            foreach (var item in body.Data)
+            {
+                result[item.SkuId] = new SkuAvailability(
+                    item.SkuId, item.Price, item.SkuEnabled == 1, item.SpuApproved, item.SpuOnShelf,
+                    item.MerchantId);
+            }
         }
 
-        return body.Data.ToDictionary(
-            a => a.SkuId,
-            a => new SkuAvailability(
-                a.SkuId, a.Price, a.SkuEnabled == 1, a.SpuApproved, a.SpuOnShelf));
+        return result;
     }
 
     /// <summary>商品服务的定价响应。</summary>

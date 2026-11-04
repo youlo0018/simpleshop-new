@@ -1,279 +1,254 @@
 <template>
-  <view class="page evaluate-page">
-    <AppHeader :title="title" :subtitle="subtitle" back>
-      <text v-if="!productId && !orderNo && session.loggedIn" class="header-action" @tap="pickEvaluable">
-        去评价
-      </text>
-    </AppHeader>
-
-    <view v-if="loading" class="loading">正在加载…</view>
-
-    <view v-else-if="orderNo" class="evaluable-list">
-      <view v-for="item in evaluableItems" :key="item.spuId" class="evaluable-card">
-        <image class="evaluable-card__image" :src="item.mainImage || placeholder" mode="aspectFill" />
-        <view class="evaluable-card__body">
-          <text class="evaluable-card__name">{{ item.spuName }}</text>
-          <text class="evaluable-card__spec">{{ item.skuSpecs }}</text>
-        </view>
-        <button v-if="!item.evaluated" class="button-mini" @tap="toPublish(item)">去评价</button>
-        <text v-else class="evaluable-card__done">已评价</text>
+  <view class="evaluates page-shell">
+    <AppHeader :title="title || '商品评价'" back />
+    <view class="summary card">
+      <text class="summary__score">{{ Number(result.displayScore || 5).toFixed(1) }}</text>
+      <view>
+        <text>{{ stars(result.displayScore) }}</text>
+        <text>共 {{ result.count || 0 }} 条评价</text>
       </view>
-      <view v-if="!evaluableItems.length" class="empty">这一单没有可评价的商品</view>
     </view>
-
-    <view v-else-if="items.length" class="evaluate-list">
-      <view v-for="item in items" :key="item.evaluateId" class="evaluate-card">
-        <view class="evaluate-card__head">
+    <view class="filters">
+      <button v-for="filter in filters" :key="filter.label" :class="{ active: activeFilter === filter.key }" @click="apply(filter)">{{ filter.label }}</button>
+    </view>
+    <view v-for="item in result.items" :key="item.evaluateId" class="evaluate card">
+      <view class="evaluate__head">
+        <view class="avatar">{{ (item.customerName || '匿').slice(0, 1) }}</view>
+        <view>
           <text>{{ item.customerName || '匿名用户' }}</text>
-          <text class="evaluate-card__score">{{ score(item.starScore) }} 分</text>
+          <text>{{ item.skuSpecs }}</text>
         </view>
-        <text class="evaluate-card__content">{{ item.content }}</text>
-        <view v-if="item.images?.length" class="evaluate-card__images">
-          <image v-for="image in item.images" :key="image" :src="image" mode="aspectFill" />
-        </view>
-        <view v-for="reply in item.replies || []" :key="reply.replyId" class="reply">
-          <text class="reply__name">{{ reply.replyTypeName || '商家回复' }}</text>
-          <text class="reply__content">{{ reply.content }}</text>
-        </view>
-        <view v-for="append in item.appends || []" :key="append.appendId" class="append">
-          <text class="append__title">追评 {{ append.starScore ? `${append.starScore} 分` : '' }}</text>
-          <text class="append__content">{{ append.content }}</text>
-          <view v-if="append.images?.length" class="evaluate-card__images">
-            <image v-for="image in append.images" :key="image" :src="image" mode="aspectFill" />
-          </view>
-        </view>
-        <view v-if="!productId && !orderNo" class="evaluate-card__actions">
-          <text class="evaluate-card__action" @tap="toAppend(item)">追评</text>
-        </view>
+        <text class="evaluate__stars">{{ stars(item.starScore) }}</text>
+      </view>
+      <text class="evaluate__content">{{ item.content }}</text>
+      <view v-if="item.images?.length" class="evaluate__images">
+        <image v-for="(image, index) in item.images" :key="index" :src="image" mode="aspectFill" @click="preview(item.images, image)" />
+      </view>
+      <view v-for="reply in item.replies || []" :key="reply.replyId" class="reply">
+        <text>{{ reply.replyTypeName }}</text>
+        <text>{{ reply.content }}</text>
+      </view>
+      <view v-for="append in item.appends || []" :key="append.appendId" class="append">
+        <text>追评</text>
+        <text>{{ append.content }}</text>
       </view>
     </view>
-
-    <view v-else class="empty">没有评价</view>
+    <EmptyState v-if="!loading && !result.items?.length" title="暂无评价" icon="chat" />
   </view>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { onLoad } from '@dcloudio/uni-app';
+import { ref } from 'vue';
+import { onLoad, onReachBottom, onPullDownRefresh } from '@dcloudio/uni-app';
 import AppHeader from '@/components/AppHeader.vue';
+import EmptyState from '@/components/EmptyState.vue';
 import { request } from '@/core/http';
-import { score } from '@/core/format';
-import { useSessionStore } from '@/stores/session';
 
-const session = useSessionStore();
-const productId = ref('');
-const orderNo = ref('');
-const loading = ref(true);
-const total = ref(0);
-const items = ref<any[]>([]);
-const evaluableItems = ref<any[]>([]);
-const placeholder = 'https://cdn.example.com/main.png';
+const spuId = ref('');
+const merchantId = ref('');
+const title = ref('');
+const page = ref(1);
+const loading = ref(false);
+const result = ref<any>({ items: [] });
+const activeFilter = ref('all');
+const filters = [
+  { key: 'all', label: '全部', hasImage: false, minStar: 0, maxStar: 0 },
+  { key: 'image', label: '有图', hasImage: true, minStar: 0, maxStar: 0 },
+  { key: 'good', label: '好评', hasImage: false, minStar: 4, maxStar: 5 },
+  { key: 'middle', label: '中评', hasImage: false, minStar: 3, maxStar: 3 },
+  { key: 'bad', label: '差评', hasImage: false, minStar: 1, maxStar: 2 },
+];
 
-const title = computed(() => {
-  if (productId.value) return '商品评价';
-  if (orderNo.value) return '订单评价';
-  return '我的评价';
-});
-const subtitle = computed(() => (orderNo.value ? `${evaluableItems.value.length} 件商品` : `${total.value} 条`));
-
-async function load() {
-  session.restore();
+async function load(reset = true) {
+  if (reset) {
+    page.value = 1;
+    result.value = { items: [] };
+  }
   loading.value = true;
+  const filter = filters.find((item) => item.key === activeFilter.value)!;
   try {
-    if (productId.value) {
-      const data = await request<any>('/gateway/evaluates/List', {
-        method: 'POST',
-        auth: false,
-        data: { spuId: productId.value, skuId: '0', page: 1, pageSize: 50 },
-        silent: true,
-      });
-      items.value = data?.items || [];
-      total.value = Number(data?.total || 0);
-      return;
-    }
-
-    if (!session.profile?.customerId) {
-      uni.navigateTo({ url: '/pages/login/index' });
-      return;
-    }
-
-    if (orderNo.value) {
-      evaluableItems.value = await request<any[]>('/gateway/evaluates/Evaluable', {
-        method: 'POST',
-        data: { customerId: session.profile.customerId, orderNo: orderNo.value },
-        silent: true,
-      }) || [];
-      return;
-    }
-
-    const data = await request<any>('/gateway/evaluates/My', {
-      method: 'POST',
-      data: { customerId: session.profile.customerId, page: 1, pageSize: 50 },
-      silent: true,
-    });
-    items.value = data?.items || [];
-    total.value = Number(data?.total || 0);
+    const data = merchantId.value
+      ? await request<any>('/gateway/evaluates/Merchant', {
+          method: 'POST',
+          auth: false,
+          data: { merchantId: merchantId.value, page: page.value, pageSize: 10 },
+        })
+      : await request<any>('/gateway/evaluates/List', {
+          method: 'POST',
+          auth: false,
+          data: {
+            spuId: spuId.value,
+            page: page.value,
+            pageSize: 10,
+            hasImage: filter.hasImage,
+            minStar: filter.minStar,
+            maxStar: filter.maxStar,
+          },
+        });
+    result.value = {
+      ...data,
+      items: reset ? data.items : [...(result.value.items || []), ...data.items],
+    };
   } finally {
     loading.value = false;
+    uni.stopPullDownRefresh();
   }
 }
 
-function toPublish(item: any) {
-  uni.navigateTo({
-    url: `/pages/evaluate/form?orderNo=${item.orderNo}&spuId=${item.spuId}&spuName=${encodeURIComponent(item.spuName || '')}`,
-  });
+function apply(filter: any) {
+  activeFilter.value = filter.key;
+  load();
 }
 
-function toAppend(item: any) {
-  uni.navigateTo({
-    url: `/pages/evaluate/form?evaluateId=${item.evaluateId}&spuName=${encodeURIComponent(item.spuName || '')}`,
-  });
+function stars(score: number) {
+  const count = Math.round(Number(score || 0));
+  return '★'.repeat(count) + '☆'.repeat(5 - count);
 }
 
-async function pickEvaluable() {
-  const data = await request<any[]>('/gateway/evaluates/Evaluable', {
-    method: 'POST',
-    data: { customerId: session.profile?.customerId, orderNo: '' },
-    silent: true,
-  }) || [];
-  const pending = data.filter((item: any) => !item.evaluated);
-  if (!pending.length) {
-    uni.showToast({ title: '没有待评价的商品', icon: 'none' });
-    return;
-  }
-
-  uni.showActionSheet({
-    itemList: pending.slice(0, 10).map((item: any) => `${item.spuName}（${item.skuSpecs}）`),
-    success: (result) => toPublish(pending[result.tapIndex]),
-  });
+function preview(urls: string[], current: string) {
+  uni.previewImage({ urls, current });
 }
 
-onLoad((options) => {
-  productId.value = String(options?.productId || '');
-  orderNo.value = String(options?.orderNo || '');
+onLoad((query) => {
+  spuId.value = String(query?.spuId || '');
+  merchantId.value = String(query?.merchantId || '');
+  title.value = String(query?.title || '');
   load();
 });
+onReachBottom(() => {
+  if (loading.value || result.value.items?.length >= result.value.total) return;
+  page.value += 1;
+  load(false);
+});
+onPullDownRefresh(() => load());
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/tokens.scss' as *;
 
-.header-action {
-  color: $brand;
-  font-size: $font-sub;
+.summary {
+  display: flex;
+  align-items: center;
+  gap: 22rpx;
+  padding: 26rpx;
+  margin-top: 20rpx;
 }
 
-.evaluate-list,
-.evaluable-list {
+.summary__score {
+  font-size: 58rpx;
+  font-weight: 600;
+}
+
+.summary view {
   display: flex;
   flex-direction: column;
-  gap: $space-3;
+  gap: 6rpx;
+  color: $muted;
+  font-size: 22rpx;
 }
 
-.evaluate-card,
-.evaluable-card {
-  padding: $space-4;
-  border-radius: $radius-lg;
-  background: $bg-card;
-}
-
-.evaluate-card__head {
-  display: flex;
-  justify-content: space-between;
-  font-size: $font-sub;
-}
-
-.evaluate-card__score {
+.summary view text:first-child {
   color: $warning;
+  font-size: 26rpx;
 }
 
-.evaluate-card__content {
-  display: block;
-  margin-top: $space-3;
-  line-height: 1.6;
-}
-
-.evaluate-card__images {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: $space-2;
-  margin-top: $space-3;
-}
-
-.evaluate-card__images image {
-  width: 100%;
-  height: 200rpx;
-  border-radius: $radius-sm;
-}
-
-.evaluate-card__actions {
+.filters {
   display: flex;
-  justify-content: flex-end;
-  margin-top: $space-3;
-  padding-top: $space-3;
-  border-top: 1rpx solid $hairline;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  padding: 22rpx 0;
 }
 
-.evaluate-card__action {
+.filters button {
+  height: 58rpx;
+  padding: 0 22rpx;
+  border: 0;
+  border-radius: 999rpx;
+  background: #fff;
+  color: $muted;
+  font-size: 22rpx;
+}
+
+.filters button.active {
+  background: $selection-bg;
+  color: $selection-text;
+  font-weight: 500;
+}
+
+.evaluate {
+  padding: 24rpx;
+  margin-bottom: 18rpx;
+}
+
+.evaluate__head {
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+}
+
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 999rpx;
+  background: #f0f3f7;
   color: $brand;
-  font-size: $font-note;
+}
+
+.evaluate__head view:nth-child(2) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4rpx;
+  font-size: 24rpx;
+}
+
+.evaluate__head view:nth-child(2) text:last-child {
+  color: $muted;
+  font-size: 20rpx;
+}
+
+.evaluate__stars {
+  color: $warning;
+  font-size: 22rpx;
+}
+
+.evaluate__content {
+  display: block;
+  padding: 18rpx 0;
+  font-size: 25rpx;
+  line-height: 1.55;
+}
+
+.evaluate__images {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10rpx;
+}
+
+.evaluate__images image {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 12rpx;
 }
 
 .reply,
 .append {
-  margin-top: $space-3;
-  padding: $space-3;
-  border-radius: $radius-sm;
-  background: $bg-page;
-}
-
-.reply__name,
-.append__title {
-  display: block;
-  color: $brand;
-  font-size: $font-note;
-}
-
-.reply__content,
-.append__content {
-  display: block;
-  margin-top: 6rpx;
-  font-size: $font-sub;
-}
-
-.evaluable-card {
   display: flex;
-  align-items: center;
-  gap: $space-3;
+  flex-direction: column;
+  gap: 5rpx;
+  padding: 14rpx;
+  margin-top: 12rpx;
+  border-radius: 12rpx;
+  background: #f6f7f9;
+  font-size: 22rpx;
 }
 
-.evaluable-card__image {
-  width: 140rpx;
-  height: 140rpx;
-  flex: none;
-  border-radius: $radius-md;
-  background: $bg-page;
-}
-
-.evaluable-card__body {
-  flex: 1;
-  min-width: 0;
-}
-
-.evaluable-card__name {
-  display: block;
-  font-weight: 600;
-}
-
-.evaluable-card__spec {
-  display: block;
-  margin-top: 6rpx;
-  color: $text-2;
-  font-size: $font-note;
-}
-
-.evaluable-card__done {
-  color: $text-3;
-  font-size: $font-note;
+.reply text:first-child,
+.append text:first-child {
+  color: $brand;
+  font-weight: 500;
 }
 </style>

@@ -21,6 +21,10 @@ public interface IOrderPort
     /// <summary>把订单标记为已退款。</summary>
     /// <param name="orderNo">订单号。</param>
     /// <param name="refundAmount">本次退款金额。</param>
+    /// <param name="refundNo">
+    /// 支付服务侧的退款单号。订单侧台账用它做退款单号（有唯一索引），
+    /// 同一订单多次部分退款必须各不相同。
+    /// </param>
     /// <param name="items">
     /// 本次退款的行明细。订单侧要用它写自己的退款台账（行级可退余额就是靠它算的），
     /// 不带的话订单详情会把已经退掉的单显示成全额可退。
@@ -28,7 +32,7 @@ public interface IOrderPort
     /// <param name="ct">取消令牌。</param>
     /// <returns>成功返回 true。</returns>
     Task<bool> MarkRefundedAsync(
-        string orderNo, decimal refundAmount,
+        string orderNo, decimal refundAmount, string refundNo,
         IReadOnlyList<RefundLineSnapshot>? items = null,
         CancellationToken ct = default);
 
@@ -92,7 +96,7 @@ public sealed class HttpOrderPort : IOrderPort
 
     /// <inheritdoc />
     public async Task<bool> MarkRefundedAsync(
-        string orderNo, decimal refundAmount,
+        string orderNo, decimal refundAmount, string refundNo,
         IReadOnlyList<RefundLineSnapshot>? items = null,
         CancellationToken ct = default)
     {
@@ -105,6 +109,7 @@ public sealed class HttpOrderPort : IOrderPort
             {
                 orderNo,
                 refundAmount,
+                refundNo,
                 items = (items ?? []).Select(a => new
                 {
                     orderItemId = a.OrderItemId,

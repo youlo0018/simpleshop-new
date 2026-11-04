@@ -1,20 +1,13 @@
 import { defineStore } from 'pinia';
 import { request } from '@/core/http';
+import type { CustomerProfile } from '@/core/types';
 import {
-  clearSession,
   getProfile,
   getToken,
   setProfile,
   setToken,
-} from '@/core/session-storage';
-
-export interface CustomerProfile {
-  customerId: string;
-  customerNo?: string;
-  customerName: string;
-  nickName: string;
-  avatar: string;
-}
+} from '@/core/storage';
+import { usePlatformStore } from './platform';
 
 interface LoginResult {
   customerId: string;
@@ -25,15 +18,7 @@ interface LoginResult {
   avatar: string;
 }
 
-interface RegisterResult {
-  customerId: string;
-  customerNo: string;
-  token: string;
-  customerName: string;
-  nickName: string;
-}
-
-export const useSessionStore = defineStore('customer-session', {
+export const useSessionStore = defineStore('session', {
   state: () => ({
     token: '',
     profile: null as CustomerProfile | null,
@@ -45,13 +30,14 @@ export const useSessionStore = defineStore('customer-session', {
   actions: {
     restore() {
       this.token = getToken();
-      this.profile = getProfile<CustomerProfile>();
+      this.profile = getProfile();
     },
     async login(customerName: string, password: string) {
+      const platform = usePlatformStore();
       const result = await request<LoginResult>('/gateway/customers/Login', {
         method: 'POST',
         auth: false,
-        data: { customerName, password },
+        data: { customerName, password, platformCode: platform.platformCode },
       });
       this.token = result.token;
       this.profile = {
@@ -61,14 +47,21 @@ export const useSessionStore = defineStore('customer-session', {
         nickName: result.nickName,
         avatar: result.avatar,
       };
-      setToken(result.token);
-      setProfile(this.profile);
+      setToken(result.token, platform.platformCode);
+      setProfile(this.profile, platform.platformCode);
     },
     async register(customerName: string, password: string, phone: string, nickName: string) {
-      const result = await request<RegisterResult>('/gateway/customers/Register', {
+      const platform = usePlatformStore();
+      const result = await request<LoginResult>('/gateway/customers/Register', {
         method: 'POST',
         auth: false,
-        data: { customerName, password, phone, nickName },
+        data: {
+          customerName,
+          password,
+          phone,
+          nickName,
+          platformCode: platform.platformCode,
+        },
       });
       this.token = result.token;
       this.profile = {
@@ -76,15 +69,28 @@ export const useSessionStore = defineStore('customer-session', {
         customerNo: result.customerNo,
         customerName: result.customerName,
         nickName: result.nickName,
-        avatar: '',
+        avatar: result.avatar,
       };
-      setToken(result.token);
+      setToken(result.token, platform.platformCode);
+      setProfile(this.profile, platform.platformCode);
+    },
+    async refreshProfile() {
+      if (!this.token || !this.profile) return;
+      this.profile = await request<CustomerProfile>('/gateway/customers/Profile', {
+        method: 'POST',
+        data: { customerId: this.profile.customerId },
+      });
       setProfile(this.profile);
     },
-    logout() {
-      this.token = '';
-      this.profile = null;
-      clearSession();
+    async logout() {
+      try {
+        await request('/gateway/customers/Logout', { method: 'POST', data: {}, silent: true });
+      } finally {
+        this.token = '';
+        this.profile = null;
+        setToken('');
+        setProfile(null);
+      }
     },
   },
 });

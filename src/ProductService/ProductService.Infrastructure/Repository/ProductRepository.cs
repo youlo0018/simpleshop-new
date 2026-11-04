@@ -38,9 +38,29 @@ public sealed class ProductRepository : CrudRepository<Product>, IProductReposit
             select = select.Where(a => a.SpuName.Contains(kw));
         }
 
-        if (query.CategoryId > 0) select = select.Where(a => a.CategoryId == query.CategoryId);
-        if (query.BrandId > 0) select = select.Where(a => a.BrandId == query.BrandId);
+        // 平台维度：C 端必须按当前平台过滤；后台 / 内部传 0 表示不限
+        // （后台的可见范围由租户 AOP 决定，这里不重复限制）
+        if (query.PlatformId > 0) select = select.Where(a => a.PlatformId == query.PlatformId);
+        // 多选优先于单选（单选保留给旧调用点）
+        var categoryIds = query.CategoryIds.ToArray();
+        if (categoryIds.Length > 0) select = select.Where(a => categoryIds.Contains(a.CategoryId));
+        else if (query.CategoryId > 0) select = select.Where(a => a.CategoryId == query.CategoryId);
+
+        var brandIds = query.BrandIds.ToArray();
+        if (brandIds.Length > 0) select = select.Where(a => brandIds.Contains(a.BrandId));
+        else if (query.BrandId > 0) select = select.Where(a => a.BrandId == query.BrandId);
+
         if (query.MerchantId > 0) select = select.Where(a => a.MerchantId == query.MerchantId);
+        if (query.TargetFilterSpecified)
+        {
+            var productIds = query.ProductIds.Distinct().ToArray();
+            select = productIds.Length == 0
+                ? select.Where(a => false)
+                : select.Where(a => productIds.Contains(a.Id));
+        }
+        // 价格区间按商品的最低 SKU 售价过滤（与排序口径一致）
+        if (query.MinPrice > 0) select = select.Where(a => a.MinPrice >= query.MinPrice);
+        if (query.MaxPrice > 0) select = select.Where(a => a.MinPrice <= query.MaxPrice);
         if (query.Status > 0) select = select.Where(a => a.Status == query.Status);
         if (query.AuditStatus > 0) select = select.Where(a => a.AuditStatus == query.AuditStatus);
 
@@ -53,6 +73,12 @@ public sealed class ProductRepository : CrudRepository<Product>, IProductReposit
                 .OrderByDescending(a => a.Id),
             ProductSorts.Newest => select
                 .OrderByDescending(a => a.CreatedAt)
+                .OrderByDescending(a => a.Id),
+            ProductSorts.PriceAsc => select
+                .OrderBy(a => a.MinPrice)
+                .OrderBy(a => a.Id),
+            ProductSorts.PriceDesc => select
+                .OrderByDescending(a => a.MinPrice)
                 .OrderByDescending(a => a.Id),
             _ => select
                 .OrderBy(a => a.AuditStatus)
@@ -68,6 +94,25 @@ public sealed class ProductRepository : CrudRepository<Product>, IProductReposit
 
         return (items, total);
     }
+
+    /// <inheritdoc />
+    public async Task<List<string>> SuggestNamesAsync(
+        long platformId, string prefix, int limit, CancellationToken ct = default)
+    {
+        var text = (prefix ?? string.Empty).Trim();
+        if (text.Length == 0 || platformId <= 0) return [];
+
+        return await _db.Select<Product>()
+            .Where(a => a.PlatformId == platformId
+                        && a.AuditStatus == AuditStatuses.Approved
+                        && a.Status == ListingStatuses.OnShelf
+                        && a.SpuName.StartsWith(text))
+            .OrderByDescending(a => a.Sales)
+            .OrderBy(a => a.Id)
+            .Take(Math.Clamp(limit, 1, 20))
+            .ToListAsync(a => a.SpuName, ct);
+    }
+
     /// <inheritdoc />
     public async Task<List<Product>> GetByIdsAsync(
         IReadOnlyCollection<long> ids, CancellationToken ct = default)
@@ -84,11 +129,86 @@ public sealed class ProductRepository : CrudRepository<Product>, IProductReposit
     }
 
     /// <inheritdoc />
+    public async Task<List<long>> ListAllVisibleIdsAsync(CancellationToken ct = default)
+        => await _db.Select<Product>()
+            .Where(a => a.AuditStatus == AuditStatuses.Approved
+                        && a.Status == ListingStatuses.OnShelf)
+            .ToListAsync(a => a.Id, ct);
+
+    /// <inheritdoc />
+    public async Task<List<long>> ListVisibleCategoryIdsAsync(
+        long merchantId, long platformId, CancellationToken ct = default)
+    {
+        var query = _db.Select<Product>()
+            .Where(a => a.MerchantId == merchantId
+                        && a.AuditStatus == AuditStatuses.Approved
+                        && a.Status == ListingStatuses.OnShelf);
+        if (platformId > 0)
+        {
+            query = query.Where(a => a.PlatformId == platformId);
+        }
+
+        var ids = await query.ToListAsync(a => a.CategoryId, ct).ConfigureAwait(false);
+        return ids.Distinct().ToList();
+    }
+
+    /// <inheritdoc />
     public async Task<List<Sku>> GetSkusAsync(long productId, CancellationToken ct = default)
         => await _db.Select<Sku>()
             .Where(a => a.ProductId == productId)
             .OrderBy(a => a.Id)
             .ToListAsync(ct);
+
+    /// <inheritdoc />
+    public async Task<List<Sku>> GetSkusByIdsAsync(
+        IReadOnlyCollection<long> ids, bool onlyEnabled, CancellationToken ct = default)
+    {
+        if (ids.Count == 0) return [];
+
+        var list = ids.Where(a => a > 0).Distinct().Take(200).ToArray();
+        if (list.Length == 0) return [];
+
+        return await _db.Select<Sku>()
+            .Where(a => list.Contains(a.Id))
+            .Where(a => !onlyEnabled || a.Status == 1)
+            .ToListAsync(ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<List<Product>> ListOnShelfByMerchantAsync(
+        long merchantId, CancellationToken ct = default)
+        => await _db.Select<Product>()
+            .Where(a => a.MerchantId == merchantId
+                        && a.Status == ListingStatuses.OnShelf
+                        && a.IsDeleted == false)
+            .ToListAsync(ct);
+
+    /// <inheritdoc />
+    public async Task<int> OffShelfByMerchantAsync(long merchantId, CancellationToken ct = default)
+        => await _db.Update<Product>()
+            // 条件更新带上「当前仍是已上架」，避免与运营的上下架操作互相覆盖
+            .Where(a => a.MerchantId == merchantId
+                        && a.Status == ListingStatuses.OnShelf
+                        && a.IsDeleted == false)
+            .Set(a => new Product
+            {
+                Status = ListingStatuses.OffShelf,
+                UpdatedAt = DateTime.UtcNow
+            })
+            .ExecuteAffrowsAsync(ct);
+
+    /// <inheritdoc />
+    public async Task<bool> UpdateRatingsAsync(
+        long productId, decimal score, int count, CancellationToken ct = default)
+        => await _db.Update<Product>()
+            .Where(a => a.Id == productId)
+            .Set(a => new Product
+            {
+                EvaluationScore = score,
+                EvaluationCount = count,
+                UpdatedAt = DateTime.UtcNow
+            })
+            .ExecuteAffrowsAsync(ct) > 0;
 
     /// <inheritdoc />
     public async Task<List<SkuPriceRow>> GetSkuPriceRowsAsync(

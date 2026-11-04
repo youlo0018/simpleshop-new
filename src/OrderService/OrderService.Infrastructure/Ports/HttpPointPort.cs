@@ -1,9 +1,13 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Collaboration.Domain.Common;
+using Collaboration.Domain.Configuration;
+using Collaboration.Domain.Infrastructure;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OrderService.Domain.Ports;
 using OrderService.Domain.Services;
+using StackExchange.Redis;
 
 namespace OrderService.Infrastructure.Ports;
 
@@ -15,14 +19,20 @@ namespace OrderService.Infrastructure.Ports;
 public sealed class HttpPointPort : IPointPort
 {
     private readonly HttpClient _http;
+    private readonly IDatabase _sharedRedis;
     private readonly ILogger<HttpPointPort> _logger;
 
     /// <summary>构造端口。</summary>
     /// <param name="http">指向积分服务的 HttpClient。</param>
+    /// <param name="redis">Redis 连接，用于把发放失败的任务写入补偿队列。</param>
+    /// <param name="redisOptions">Redis 配置，取共享库号。</param>
     /// <param name="logger">日志器。</param>
-    public HttpPointPort(HttpClient http, ILogger<HttpPointPort> logger)
+    public HttpPointPort(
+        HttpClient http, IConnectionMultiplexer redis, IOptions<RedisOptions> redisOptions,
+        ILogger<HttpPointPort> logger)
     {
         _http = http;
+        _sharedRedis = redis.GetDatabase(redisOptions.Value.SharedDatabase);
         _logger = logger;
     }
 
@@ -69,10 +79,32 @@ public sealed class HttpPointPort : IPointPort
     /// <inheritdoc />
     public async Task EarnByOrderAsync(long customerId, string orderNo, decimal paidAmount, CancellationToken ct = default)
     {
-        await SendAsync(
-            "internal/points/EarnByOrder",
-            new EarnByOrderRequest(customerId, orderNo, paidAmount, "订单完成发放"),
-            ct).ConfigureAwait(false);
+        try
+        {
+            await SendAsync(
+                "internal/points/EarnByOrder",
+                new EarnByOrderRequest(customerId, orderNo, paidAmount, "订单完成发放"),
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 发放失败写入补偿队列，由 ScheduledService 的补偿任务按 bizNo 幂等重放。
+            // 只留一行「需补偿任务兜底」的日志是不够的 —— 之前根本没有那个任务，
+            // 积分就静默消失了，只有客户来投诉才会被发现。
+            var queued = await PointGrantCompensationQueue.EnqueueAsync(
+                _sharedRedis,
+                new PointGrantCompensation(PointGrantKinds.Order, customerId, orderNo, paidAmount))
+                .ConfigureAwait(false);
+
+            if (!queued)
+            {
+                _logger.LogError(ex,
+                    "订单 {OrderNo} 完成后发放积分失败，且补偿入队失败（Redis 不可用），需人工补发",
+                    orderNo);
+            }
+
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -111,13 +143,13 @@ public sealed class HttpPointPort : IPointPort
 
     /// <inheritdoc />
     public async Task RecoverByRefundAsync(
-        long customerId, string orderNo, decimal refundRatio, CancellationToken ct = default)
+        long customerId, string orderNo, string refundNo, decimal refundRatio, CancellationToken ct = default)
     {
         // 比例不在这里算：只有退款方知道退了多少，积分服务不认订单金额，
         // 让它自己算就得再查一遍订单 —— 金额口径会分叉。
         var body = await SendAsync(
             "internal/points/Refund",
-            new RefundRequest(customerId, orderNo, refundRatio, "退款按比例回收积分"),
+            new RefundRequest(customerId, orderNo, refundNo, refundRatio, "退款按比例回收积分"),
             ct).ConfigureAwait(false);
 
         // 业务失败要往上抛：静默吞掉的话，客户一边拿回钱一边留着白拿的积分，
@@ -189,9 +221,11 @@ public sealed class HttpPointPort : IPointPort
     /// <summary>退款回收积分请求体。</summary>
     /// <param name="CustomerId">客户 Id。</param>
     /// <param name="BizNo">订单号。</param>
+    /// <param name="RefundNo">退款单号，同一订单多次部分退款的幂等键。</param>
     /// <param name="RefundRatio">退款比例 0~1，整单退传 1。</param>
     /// <param name="Remark">备注。</param>
-    private sealed record RefundRequest(long CustomerId, string BizNo, decimal RefundRatio, string Remark);
+    private sealed record RefundRequest(
+        long CustomerId, string BizNo, string RefundNo, decimal RefundRatio, string Remark);
 
     /// <summary>积分余额响应数据。</summary>
     /// <param name="CustomerId">客户 Id。</param>

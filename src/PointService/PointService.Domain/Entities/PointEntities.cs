@@ -136,6 +136,18 @@ public class PointRecord : EntityBase
     [Column(Name = "biz_no", StringLength = 64)]
     public string BizNo { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 退款单号。只对 <see cref="PointActions.Refund"/> 有值，其余动作为空串。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么退款要带退款单号</b>：同一订单可以有多次部分退款，
+    /// 幂等键只算 BizNo（订单号）+ Action 的话，第二次部分退款会被当成重复请求直接丢掉，
+    /// 该回收的积分永远收不回来。幂等键因此扩展为
+    /// CustomerId + BizNo + Action + RefundNo（见建表脚本的唯一索引）。
+    /// </remarks>
+    [Column(Name = "refund_no", StringLength = 64)]
+    public string RefundNo { get; set; } = string.Empty;
+
     /// <summary>动作，见 <see cref="PointActions"/>。</summary>
     [Column(Name = "action", StringLength = 16)]
     public string Action { get; set; } = string.Empty;
