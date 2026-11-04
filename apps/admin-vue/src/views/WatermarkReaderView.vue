@@ -15,6 +15,7 @@
     <section
       class="panel upload-panel"
       :class="{ 'upload-panel--active': dragging }"
+      :aria-busy="state.ocrRunning"
       @dragenter.prevent="dragging = true"
       @dragover.prevent
       @dragleave.prevent="dragging = false"
@@ -57,7 +58,7 @@
             </label>
             <div class="actions">
               <el-button :loading="state.ocrRunning" type="primary" @click="runOcr">
-                自动识别
+                {{ state.ocrRunning ? '识别中…' : '自动识别' }}
               </el-button>
               <el-button :disabled="state.ocrRunning" @click="resetEffects">重置参数</el-button>
             </div>
@@ -102,7 +103,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, useTemplateRef } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElLoading, ElMessage } from 'element-plus';
 import { View } from '@element-plus/icons-vue';
 import request from '@/api/request';
 import { emptyText, formatDateTime } from '@/utils/format';
@@ -324,9 +325,18 @@ async function runOcr() {
   state.ocrRunning = true;
   state.ocrDone = false;
   state.ocrStatus = '准备识别…';
+  const loadingInstance = ElLoading.service({
+    lock: true,
+    text: '正在识别水印，请稍候…',
+    background: 'rgba(255, 255, 255, 0.82)',
+    customClass: 'watermark-recognition-loading',
+  });
   try {
+    await nextTick();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     const matched = await runFingerprintMatch();
     if (!matched) {
+      loadingInstance.setText('数字水印未命中，正在启动 OCR 识别…');
       render();
       await nextTick();
       const ocr = await ensureWorker();
@@ -342,6 +352,7 @@ async function runOcr() {
     state.ocrStatus = '';
     ElMessage.error(error instanceof Error ? error.message : '水印识别失败');
   } finally {
+    loadingInstance.close();
     state.ocrRunning = false;
   }
 }
